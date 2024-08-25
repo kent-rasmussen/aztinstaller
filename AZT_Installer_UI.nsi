@@ -1303,7 +1303,7 @@ Function .onInstSuccess
     StrCpy $logstring  "Doing first run of A-Z+T, to make sure modules are installed..."
     Call logMessage
     ClearErrors
-    ExecShell "open" "python.exe" "$aztfilename" SW_HIDE
+    ExecShell "open" "python.exe" "$aztfilename" SW_SHOW
 FunctionEnd
 
 ;-----------------------------------------------------------------
