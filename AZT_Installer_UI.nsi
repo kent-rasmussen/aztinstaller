@@ -1,13 +1,13 @@
 ;--------------------------------
-;Include Modern UI
 
-  !include MUI2.nsh
+  !include MUI2.nsh  ;Include Modern UI
   !include LogicLib.nsh
   !include WordFunc.nsh
   !include FileFunc.nsh
   !include StrFunc.nsh    
-  !include WinMessages.nsh
+  !include WinMessages.nsh  ; For SendMessage
 
+; Used to reposition the installer window
   !ifndef SPI_GETWORKAREA
   !define SPI_GETWORKAREA 0x0030
   !endif
@@ -20,21 +20,23 @@
   ${StrRep}
   ${StrLoc}
 
-; Macro and Function for ${Locate} to find folders 
-  !insertmacro Locate  
-
+; Macro and Function for ${Locate} to find folders from FileFunc
+  !insertmacro Locate
 
 ; Show all the DetailsPrint to the user while installation is in progress
   ShowInstDetails show
 
 ;--------------------------------
-; Glbal variables
+; Constants
 
   !define NEWLINE "$\r$\n"
   !define TITLENAME "A-Z+T Installer"
-  
-  var /GLOBAL AppName
-  Var /GLOBAL ExeNameOriginal
+  !define APPNAME "A-Z+T"
+  !define INSTALLERNAME "AZT_Installer"  ; original name
+
+;--------------------------------
+; Global variables
+
   Var /GLOBAL pythonversion
   Var /GLOBAL pythonfilename
   Var /GLOBAL pythonsize
@@ -81,9 +83,25 @@
   Var /GLOBAL tempLogFile
   
 
-;***************************************************************************************
+
+
+;------------------------------------------------------------------------------
+;General
+;------------------------------------------------------------------------------
+
+  ;Name and file
+  Name ${APPNAME}
+  OutFile "${INSTALLERNAME}.exe"
+  Unicode True
+
+  ;Request application privileges for Windows 
+  RequestExecutionLevel admin
+  
+  ;Default installation folder  (sets INSTDIR)
+  InstallDir "$DESKTOP\azt"
+
 ;--------------------------------
-;Descriptions
+;Descriptions - if setting up multiple languages
 
   ;Language strings
   ;LangString DESC_pythonId ${LANG_ENGLISH} "Python"
@@ -93,413 +111,41 @@
   ;   !insertmacro MUI_DESCRIPTION_TEXT ${pythonId} $(DESC_pythonId)
   ; !insertmacro MUI_FUNCTION_DESCRIPTION_END
 
-;--------------------------------
-; Functions
-
-;-----------------------------------------------------------------
-; .onInstSuccess - Executes at the end of a successful installation 
-Function .onInstSuccess
-    StrCpy $logstring "Installation completed successfully.${NEWLINE}${NEWLINE}A-Z+T will be launched now to finish configuration."
-    Call logMessage
-    FileClose $log0
-    MessageBox MB_OK $logstring
-    StrCpy $logstring  "Doing first run of A-Z+T, to make sure modules are installed..."
-    Call logMessage
-    ClearErrors
-    ExecShell "open" "python.exe" "$aztfilename" SW_HIDE
-FunctionEnd
-
-;-----------------------------------------------------------------
-;.onInstFailed - Executes at the end of an installation abort
-Function .onInstFailed
-  StrCpy $logstring  "$AppName installation aborted."
-  Call logMessage
-  FileClose $log0
-  MessageBox MB_YESNO "$AppName installation aborted.  View log file?" IDNO NoReadme
-      Exec "notepad.exe $logfile"
-  NoReadme:
-FunctionEnd
-
-;-----------------------------------------------------------------
-; logMessage: Function expects the file to be open for write at handle $log0
-; Parms:       $logstring contains the string to write to the file
-;              $log0 contains the output log handle, opened in .onInit 
-Function logMessage
-  SetDetailsPrint both  ; some macros seem to be changing this, reset it to make sure DetailPrint write to console
-  DetailPrint $logstring
-  FileWrite $log0 "$logstring${NEWLINE}"
-FunctionEnd
-
-;-----------------------------------------------------------------
-; FindHandlerCallBack: Function call required by ${Locate} 
-; $R9    contains the full path of the located folder
-; $R8    "path"
-; $R7    "name"
-; $R6    "size"  ($R6="" if directory, $R6="0" if file with /S=)
-; Store the first found folder path in $R1  
-; $R0 contains the original search string
-; $R2 contains the target path being searched
-Function FindHandlerCallBack
-  StrCpy $R1 $R9
-  StrCpy $logstring "FindHandlerCallBack - $R0 Found at $R1"
-  Call logMessage
-FunctionEnd
-
-;-----------------------------------------------------------------
-; readLongPathsEnabled: Function attempts to read the registry 
-;     Expects $R1 to have a value from 1 to 5 that maps to a registry key
-;       Cases 1 - 5 map to HKLM,HKCU,HKCR,HKU,HKCC (no easy way to do a for with strings)
-;     Sets $R2 to the corresponding registry key value
-;     If found, $R0 contains the DWORD value
-;     If NOT found, will set error flag -- caller should check with ifErrors
-Function readLongPathsEnabled
-  StrCpy $logstring "Reading Registry Variable LongPathsEnabled - pass $R1"
-  Call logMessage  
-  ; Note:  Repeating the ReadRegDWORD in each case because the command does not accept a 
-  ;        variable for the key (HKLM, etc.) -- it must be hardcoded.
-  ${Switch} $R1
-    ${Case} 1
-      StrCpy $R2 HKLM
-      ReadRegDWORD $R0 HKLM "SYSTEM\CurrentControlSet\Control\FileSystem" "LongPathsEnabled"
-      ${Break}
-    ${Case} 2
-      StrCpy $R2 HKCU
-      ReadRegDWORD $R0 HKCU "SYSTEM\CurrentControlSet\Control\FileSystem" "LongPathsEnabled"
-      ${Break}
-    ${Case} 3
-      StrCpy $R2 HKCR
-      ReadRegDWORD $R0 HKCR "SYSTEM\CurrentControlSet\Control\FileSystem" "LongPathsEnabled"
-      ${Break}
-    ${Case} 4
-      StrCpy $R2 HKU
-      ReadRegDWORD $R0 HKU "SYSTEM\CurrentControlSet\Control\FileSystem" "LongPathsEnabled"
-      ${Break}
-    ${Case} 5
-      StrCpy $R2 HKCC
-      ReadRegDWORD $R0 HKCC "SYSTEM\CurrentControlSet\Control\FileSystem" "LongPathsEnabled"
-      ${Break}
-  ${EndSwitch}  
-FunctionEnd
-
-;-----------------------------------------------------------------
-; writeLongPathsEnabled: Function sets the DWORD value in LongPathsEnabled in the registry 
-;     Expects $R1 to have a value from 1 to 5 that maps to a registry key
-;       Cases 1 - 5 map to HKLM,HKCU,HKCR,HKU,HKCC (no easy way to do a for with strings)
-;     Sets $R2 to the corresponding registry key value
-;     If fails, will set error flag -- caller should check with ifErrors
-Function writeLongPathsEnabled
-  StrCpy $logstring "Reading Registry Variable LongPathsEnabled"
-  Call logMessage
-  ; Cases 1 - 5 map to HKLM,HKCU,HKCR,HKU,HKCC (no easy way to do a for with strings)
-  ${Switch} $R1
-        ${Case} 1
-          StrCpy $R2 HKLM
-          WriteRegDWORD HKLM "SYSTEM\CurrentControlSet\Control\FileSystem" "LongPathsEnabled" 1
-          ${Break}
-        ${Case} 2
-          StrCpy $R2 HKCU
-          WriteRegDWORD HKCU "SYSTEM\CurrentControlSet\Control\FileSystem" "LongPathsEnabled" 1
-          ${Break}
-        ${Case} 3
-          StrCpy $R2 HKCR
-          WriteRegDWORD HKCR "SYSTEM\CurrentControlSet\Control\FileSystem" "LongPathsEnabled" 1
-          ${Break}
-        ${Case} 4
-          StrCpy $R2 HKU
-          WriteRegDWORD HKU "SYSTEM\CurrentControlSet\Control\FileSystem" "LongPathsEnabled" 1
-          ${Break}
-        ${Case} 5
-          StrCpy $R2 HKCC
-          WriteRegDWORD HKCC "SYSTEM\CurrentControlSet\Control\FileSystem" "LongPathsEnabled" 1
-          ${Break}
-      ${EndSwitch}
-FunctionEnd
-
-;-----------------------------------------------------------------
-; addLongPathsEnabled: Function adds a new entry for LongPathsEnabled in the registry 
-;     Expects $R1 to have a value from 1 to 5 that maps to a registry key
-;     Expects $R2 to have the the corresponding registry key (HKLM,HKCU,HKCR,HKU,HKCC )
-;     Sets $R0 with the value from the registry if no error
-;     If fails, will set error flag -- caller should check with ifErrors
-Function addLongPathsEnabled  
-  StrCpy $logstring "Adding registry entry LongPathsEnabled in $R2"
-  Call logMessage
-  Call writeLongPathsEnabled
-  ifErrors errorExit
-  
-  ; Verify that it's set now
-  StrCpy $logstring "Verify registry entry was set correctly for LongPathsEnabled in $R2"
-  Call logMessage
-  
-  Call readLongPathsEnabled
-  ifErrors errorExit  
-  StrCpy $logstring "Registry LongPathsEnabled found: $R0"
-  Call logMessage
-  ${If} $R0 == 1
-    StrCpy $logstring "Registry LongPathsEnabled in $R2"
-    Call logMessage
-    StrCpy $found "true" 
-  ${Else} 
-    setErrors
-  ${EndIf}
-
-errorExit:
-FunctionEnd
-
-
-;----------------------------------------------------------------
-; macro breaks down a version in the form major.minor.patch
-; into its individual components so they can be compared.
-!macro VersionToComponents version major minor patch
-  Push "$R0"
-  Push "$R1"
-  Push "$R2"
-
-  StrCpy $R0 "${version}"
-  ${FindFirstChar} $R0 "." $R1
-  StrCpy ${major} $R0 $R1
-  StrCpy $R0 $R0 "" $R1 + 1
-
-  ${FindFirstChar} $R0 "." $R1
-  StrCpy ${minor} $R0 $R1
-  StrCpy ${patch} $R0 "" $R1 + 1
-
-  Pop $R2
-  Pop $R1
-  Pop $R0
-!macroend
-;-----------------------------------------------------------------
-; checkGitVersion: Function checks for git already installed
-;                  and its version number.
-; Expects the desired version to be in "$gitversion".  
-; Compares the installed git version (if any) to the desired version
-; Results pushed to the stack:
-; Push $thisVersion : version string found
-; Push $exitCode : "0" means version is installed and is >= desired version.
-Function checkGitVersion
-  Var /GLOBAL thisVersion
-  Var /GLOBAL versionOffset
-  Var /GLOBAL exitCode
-  Var /GLOBAL resultString
-  Var /GLOBAL gitMajor
-  Var /GLOBAL gitMinor
-  Var /GLOBAL gitPatch
-  Var /GLOBAL desiredMajor
-  Var /GLOBAL desiredMinor
-  Var /GLOBAL desiredPatch
-  
-  StrCpy $thisVersion "Git version not found"  
-
-  ; Run 'git --version' and capture the output
-  StrCpy $logstring "Checking git version"
-  Call logMessage
-
-  StrCpy $tempLogFile "git_error.log"
-  ExecWait 'cmd /C git --version >$tempLogFile' $exitCode
-  StrCpy $logstring "   Return code: $exitCode"
-  Call logMessage
-  ${If} $exitCode == 0    
-  
-    ; Read the error log file content into a variable
-    FileOpen $0 $tempLogFile r
-    FileRead $0 $thisVersion
-    FileClose $0
-
-    StrCpy $logstring "git version results: $thisVersion"
-    Call logMessage
-  
-    ; Extract the version number from the output
-    ; The output will be in a form such as "git version x.y.z.windows.n", where we only want x.y.z (major.minor.patch)
-    ${StrLoc} $R0 $thisVersion "git version" ">" ; Find "git version" in the output - > is start of line
-    IntOp $R0 $R0 + 11 ; Move the pointer to version number, 11 spaces beyond the "git version"
-    StrCpy $thisVersion $thisVersion "" $R0 ; Extract the version number and beyond
-    ;StrCpy $logstring "thisVersion: $thisVersion"
-    ;Call logMessage
-
-    IntOp $versionOffset 0 - 0  ; start at 0
-    ; Keep only the portion of the version thru the third period
-    ${StrLoc} $R0 $thisVersion "." 0 ; Find first period (major)
-    IntOp $R0 $R0 + 1
-    IntOp $versionOffset $versionOffset + $R0
-    StrCpy $R1 $thisVersion "" $R0  ; R1 stripped of major version
-    ;StrCpy $logstring "R1: $R1"
-    ;Call logMessage
-
-    ${StrLoc} $R0 $R1 "."  $R0 ; find second period
-    IntOp $R0 $R0 + 1
-    IntOp $versionOffset $versionOffset + $R0
-    StrCpy $R1 $R1 "" $R0  ; R1 stripped of minor version
-    ;StrCpy $logstring "R1: $R1"
-    ;Call logMessage
-
-    ${StrLoc} $R0 $R1 "." $R0 ; location of third period
-    ${If} $R0 == "" ; no third period, so take whole string      
-      StrLen $R0 $R1
-    ${EndIf}
-    IntOp $versionOffset $versionOffset + $R0  ; total offset
-    StrCpy $thisVersion $thisVersion $versionOffset 0 ; Extract just the version number
-    ;StrCpy $logstring "extracted version number: $thisVersion"
-    ;Call logMessage
-
-    ; Prepare the version number for comparison by replacing any bad characters
-    ${VersionConvert} $thisVersion "" $thisVersion
-    ; Result expected in $R0: 0-Versions are equal; 1-thisVersion is newer; 2-gitversion is newer
-    ${VersionCompare} $thisVersion $gitversion $R0
-    StrCpy $logstring "VersionCompare result code: $R0"
-    Call logMessage
-
-    ${If} $R0 == "2"
-    StrCpy $logstring "Git version found: $thisVersion is less than desired $gitversion"
-      Call logMessage
-      StrCpy $exitCode "1" ; will require reinstall    
-    ${Else}
-      StrCpy $logstring "Git version found: $thisVersion is newer or equal to desired $gitversion"
-      Call logMessage
-      StrCpy $exitCode "0" ; will not require reinstall  
-    ${EndIf}
-
-  ${Else}
-      StrCpy $logstring "Git is not installed."
-      Call logMessage
-      StrCpy $exitCode "1" ; will require install
-  ${EndIf}
-
-Push $thisVersion
-Push $exitCode
-FunctionEnd
-
-;-----------------------------------------------------------------
-; gitPullAZT: Function gets drive and path where AZT repo lives
-;             Switches to that directory and does a git pull
-;             The switches back to the installation drive and directory
-;
-Function gitPullAZT
-  StrCpy $logstring "---- gitPullAZT ---- "
-  Call logMessage
-
-  ; Save the current installation path
-  Var /GLOBAL SaveCurrentDirectory
-  StrCpy $SaveCurrentDirectory $EXEDIR
-  StrCpy $logstring "Saving current directory: $SaveCurrentDirectory"
-  Call logMessage    
-
-  ; Get the current script's drive letter
-  Var /GLOBAL ExeDrive
-  ${GetRoot} $EXEDIR $ExeDrive
-  StrCpy $logstring "GetRoot: Current drive: $ExeDrive"
-  Call logMessage
-  
-  ; Store the target directory (modify as needed)
-  StrCpy $1 $INSTDIR
-
-  ; Get the drive letter of the target directory
-  Var /GLOBAL InstDrive
-  ${GetRoot} "$1" $InstDrive
-  StrCpy $logstring "GetRoot: Target drive: $InstDrive"
-  Call logMessage
-
-  ; Compare current drive ($ExeDrive) with the target drive ($InstDrive)
-  StrCmp $ExeDrive $InstDrive noDriveChange 0
-
-  ; If the drives are different, switch to the target drive
-  StrCpy $logstring "Switching to Drive: $InstDrive"
-  Call logMessage
-  ExecWait "$InstDrive"
-
-noDriveChange:
-  ; Now change to the target directory
-  SetOutPath "$1"
-  StrCpy $logstring "Switched to $OUTDIR"
-  Call logMessage  
-  
-  ; Do a git pull in the target directory
-  StrCpy $logstring "Executing git pull origin...."
-  Call logMessage
-    
-  StrCpy $tempLogFile "git_error.log"
-  ClearErrors
-  ExecWait 'cmd /C $\"$gitexe$\" pull origin 2>$tempLogFile' $0
-  StrCpy $logstring "   Return value: $0"
-  Call logMessage
-  ${If} $0 != 0
-
-    ; Check if the git clone was successful
-    ;IfErrors 0 aztNoErrors
-
-    ; Read the error log file content into a variable
-    FileOpen $0 $tempLogFile r
-    FileRead $0 $ReturnError
-    FileClose $0
-
-    StrCpy $logstring "git pull origin returned error: ${NEWLINE}$ReturnError"
-    Call logMessage
-  ${EndIf}
-
-  ; Switch back to the installation drive and directory
-  ; Compare current drive ($ExeDrive) with the target drive ($InstDrive)
-  StrCmp $ExeDrive $InstDrive noDriveChange2 0
-
-  ; If the drives are different, switch to the target drive
-  StrCpy $logstring "Switching to Drive: $ExeDrive"
-  Call logMessage
-  ExecWait "$ExeDrive"
-
-noDriveChange2:
-  
-  ; Return to the exectutable path
-  SetOutPath $SaveCurrentDirectory
-
-  StrCpy $logstring "Switched to $OUTDIR"
-  Call logMessage
-  Return
-
-ErrorExit:
-  ; If there was an error, display an error message and exit
-  StrCpy $logstring "gitPullAZT existing with error."
-  Call logMessage  
-  Return
-FunctionEnd
-
-;------------------------------------------------------------------------------
-;General
-;------------------------------------------------------------------------------
-
-  ;Name and file
-  Name $AppName
-  OutFile "AZT_Installer.exe"
-  Unicode True
-
-  ;Request application privileges for Windows 
-  RequestExecutionLevel admin
-  
-  ;Default installation folder  (sets INSTDIR)
-  InstallDir "$DESKTOP\azt"
-  
-;--------------------------------
+;--------------------------------I
 ;Interface Settings
 
   !define MUI_ABORTWARNING
   #!define MUI_INSTFILESPAGE_COLORS "FFFFFF 000000" ;Two colors
 
-
 ;--------------------------------
 ;Pages   
 
-  ; Invoike the custom positioning function on GUI start
+  ; Invoke the custom positioning function on GUI start
   !define MUI_CUSTOMFUNCTION_GUIINIT positionInstWindow
+  
+  ; Enable MUI_PAGE_LICENSE to display the license page for user to accept
   ;!insertmacro MUI_PAGE_LICENSE ".\License.txt"
+  
+  ; Disable MUI_PAGE_COMPONENTS if you do not want the user to select which sections to install
+  ; Every "Section" will appear on the list.   
+  ; Required Sections are checked and set to Read/Only in .onInit using SectionSetFlags
   !insertmacro MUI_PAGE_COMPONENTS
+  
+  ; Enable MUI_PAGE_DIRECTORY to permit user to change the installationi target directory
   ;!insertmacro MUI_PAGE_DIRECTORY
+  
   !insertmacro MUI_PAGE_INSTFILES
   
-  ; Displays succesful completion page with a "Launch Application" option
+  ; FINISHPAGE macros are used to display a successful completion page with a "Launch Application" option
+  ; Disabling for now since we are launching the page conditionally in .onInstSuccess
   ; !define MUI_FINISHPAGE_RUN "cmd /c python $INSTDIR\main.py"
   ; !define MUI_FINISHPAGE_RUN_TEXT "Launch A-Z+T now ($INSTDIR\main.py)"
-  ;!define MUI_FINISHPAGE_TEXT "$AppName finished installing at${NEWLINE}${NEWLINE}$aztfilename.${NEWLINE}${NEWLINE}Click Finish to close setup."
+  ;!define MUI_FINISHPAGE_TEXT "${APPNAME} finished installing at${NEWLINE}${NEWLINE}$aztfilename.${NEWLINE}${NEWLINE}Click Finish to close setup."
   ;!insertmacro MUI_PAGE_FINISH
 
-  !insertmacro MUI_UNPAGE_CONFIRM
-  !insertmacro MUI_UNPAGE_INSTFILES
+  ; Uninstaller macros
+  ;!insertmacro MUI_UNPAGE_CONFIRM
+  ;!insertmacro MUI_UNPAGE_INSTFILES
   
 ;--------------------------------
 ;Languages
@@ -507,21 +153,14 @@ FunctionEnd
   !insertmacro MUI_LANGUAGE "English"
 
 
-;--------------------------------------------------------------------------------------
+;======================================================================================
+;======================================================================================
+
 ;Installer Sections
-;--------------------------------------------------------------------------------------
 
 
 ;***************************************************************************************
 Section "Python" pythonId
-
-  ; StrCpy $logstring "gitRunOnce = $gitRunOnce"
-  ; Call LogMessage
-  ; ${If} $gitRunOnce == "1"  
-  ;   StrCpy $logstring "Relaunch, skip Python installation."
-  ;   Call logMessage
-  ;   goto pythonEnd  ; skip if second run
-  ; ${Endif}    
   
   ;----------------------------------------------------------------
   !insertmacro MUI_HEADER_TEXT_PAGE "${TITLENAME}"  "Installing Python..."
@@ -581,10 +220,10 @@ Section "Python" pythonId
     Call logMessage
   ${EndIf}
   
-;-------------
-skipPython:
 
 ;----------------------------------------------------------------
+; Enable readLongPathsEnabled in Registry for use with Python
+
 !insertmacro MUI_HEADER_TEXT_PAGE "${TITLENAME}"  "Updating Registry LongPathsEnabled"
 StrCpy $logstring "${NEWLINE}-----  Registry LongPathsEnabled Test/Set ----- "
 Call logMessage
@@ -637,7 +276,7 @@ SectionEnd
 
 ;***************************************************************************************
 Section "Git" gitId
-;goto relaunchNSIS
+
   ;----------------------------------------------------------------
   !insertmacro MUI_HEADER_TEXT_PAGE "${TITLENAME}" "Installing Git..."
   StrCpy $logstring "${NEWLINE}-----  Git Installer ----- "
@@ -780,11 +419,10 @@ Section "AZT" aztId
   !insertmacro MUI_HEADER_TEXT_PAGE "${TITLENAME}" "Installing AZT from Git repository..."
   StrCpy $logstring "${NEWLINE}-----  AZT Installer ----- "
   Call logMessage
-
+  
+  ; Initialize variables and constants
   !define REPO_NAME "azt.git"
   !define REPO_URL "https://github.com/kent-rasmussen/azt.git"
-  
-  ; Initialize variables
   StrCpy $azt ""
 
   ; Show a message that we're starting to look for the repo
@@ -972,7 +610,7 @@ ${If} $0 != 0
   ${EndIf}
 ${EndIf}
 
-aztNoErrors:
+;aztNoErrors:
   
   ;----------------------------------------------------------------  
   ; Successful install of AZT, set up shortcuts
@@ -1177,7 +815,7 @@ continueCharis2:
 
 errorExitCharis:
   ClearErrors
-  StrCpy $logstring "Error installing Charis SIL Fonts"
+  StrCpy $logstring "Error installing Charis SIL Fonts - they may already be installed."
   Call logMessage
   
 ;--------------------------------
@@ -1186,6 +824,7 @@ SectionEnd
 
 ;***************************************************************************************
 Section "XLingPaper" xlpId
+  
   ;----------------------------------------------------------------
   !insertmacro MUI_HEADER_TEXT_PAGE "${TITLENAME}" "Installing XLingPaper.  Answer prompts in that installer to complete."
   StrCpy $logstring "${NEWLINE}-----  XLP Installer ----- "
@@ -1279,6 +918,7 @@ SectionEnd
 
 ;***************************************************************************************
 Section "Praat" praatId
+  
   ;----------------------------------------------------------------
   !insertmacro MUI_HEADER_TEXT_PAGE "${TITLENAME}" "Installing Praat..."
   StrCpy $logstring "${NEWLINE}-----  Praat Installer ----- "
@@ -1400,6 +1040,7 @@ SectionEnd
 
 ;***************************************************************************************
 Section "Mercurial"  mercurialId
+  
   ;----------------------------------------------------------------
   !insertmacro MUI_HEADER_TEXT_PAGE "${TITLENAME}" "Installing Mercurial...."
   StrCpy $logstring "${NEWLINE}-----  Mercurial Installer ----- "
@@ -1515,6 +1156,12 @@ SectionEnd
 
 ;SectionEnd
 
+
+;======================================================================================
+;======================================================================================
+;
+; Functions
+
 ;-----------------------------------------------------------------
 ; positionInstWindow - called during .onGUIInit to reposition the window
 ;                      Moving slightly off center to prevent it being hidden
@@ -1556,15 +1203,12 @@ Function positionInstWindow
 FunctionEnd
 
 ;-----------------------------------------------------------------
-; .onInit is executed automatiCally when the installer is started
-;     Use it to initialize features
+; .onInit is executed automatically when the installer is started
+;     Use it to initialize features and variables
 Function .onInit
 
-  StrCpy $AppName "A-Z+T"
-  ; This may not be the actual executable since user might download multiple times.  Only use for log file.
-  StrCpy $ExeNameOriginal "AZT_Installer.exe"   
+  # Define paths  
 
-  # Define paths
   StrCpy $pythonversion "3.12.4"
   StrCpy $pythonfilename "python-$pythonversion-amd64.exe"
   StrCpy $pythonsize "^(25.5322 Megabyte^(s^); 26772456 bytes^)"
@@ -1604,7 +1248,7 @@ Function .onInit
   File "Transcribe-Tone.ico"
     
   ClearErrors
-  StrCpy $logfile "$ExeNameOriginal-log.txt"
+  StrCpy $logfile "${INSTALLERNAME}.log"
   FileOpen $log0 $logfile w
 
   SetDetailsPrint both
@@ -1646,5 +1290,357 @@ Function .onInit
     StrCpy $withadmin "0"
     Abort
   ${EndIf}  
+
+FunctionEnd
+
+;-----------------------------------------------------------------
+; .onInstSuccess - Executes at the end of a successful installation 
+Function .onInstSuccess
+    StrCpy $logstring "Installation completed successfully.${NEWLINE}${NEWLINE}A-Z+T will be launched now to finish configuration."
+    Call logMessage
+    FileClose $log0
+    MessageBox MB_OK $logstring
+    StrCpy $logstring  "Doing first run of A-Z+T, to make sure modules are installed..."
+    Call logMessage
+    ClearErrors
+    ExecShell "open" "python.exe" "$aztfilename" SW_HIDE
+FunctionEnd
+
+;-----------------------------------------------------------------
+;.onInstFailed - Executes at the end of an installation abort
+Function .onInstFailed
+  StrCpy $logstring  "${APPNAME} installation aborted."
+  Call logMessage
+  FileClose $log0
+  MessageBox MB_YESNO "${APPNAME} installation aborted.  View log file?" IDNO NoReadme
+      Exec "notepad.exe $logfile"
+  NoReadme:
+FunctionEnd
+
+;-----------------------------------------------------------------
+; logMessage: Function expects the file to be open for write at handle $log0
+; Parms:       $logstring contains the string to write to the file
+;              $log0 contains the output log handle, opened in .onInit 
+Function logMessage
+  SetDetailsPrint both  ; some macros seem to be changing this, reset it to make sure DetailPrint write to console
+  DetailPrint $logstring
+  FileWrite $log0 "$logstring${NEWLINE}"
+FunctionEnd
+
+;-----------------------------------------------------------------
+; FindHandlerCallBack: Function call required by ${Locate} 
+; $R9    contains the full path of the located folder
+; $R8    "path"
+; $R7    "name"
+; $R6    "size"  ($R6="" if directory, $R6="0" if file with /S=)
+; Store the first found folder path in $R1  
+; $R0 contains the original search string
+; $R2 contains the target path being searched
+Function FindHandlerCallBack
+  StrCpy $R1 $R9
+  StrCpy $logstring "FindHandlerCallBack - $R0 Found at $R1"
+  Call logMessage
+FunctionEnd
+
+;-----------------------------------------------------------------
+; readLongPathsEnabled: Function attempts to read the registry 
+;     Expects $R1 to have a value from 1 to 5 that maps to a registry key
+;       Cases 1 - 5 map to HKLM,HKCU,HKCR,HKU,HKCC (no easy way to do a for with strings)
+;     Sets $R2 to the corresponding registry key value
+;     If found, $R0 contains the DWORD value
+;     If NOT found, will set error flag -- caller should check with ifErrors
+Function readLongPathsEnabled
+  StrCpy $logstring "Reading Registry Variable LongPathsEnabled - pass $R1"
+  Call logMessage  
+  ; Note:  Repeating the ReadRegDWORD in each case because the command does not accept a 
+  ;        variable for the key (HKLM, etc.) -- it must be hardcoded.
+  ${Switch} $R1
+    ${Case} 1
+      StrCpy $R2 HKLM
+      ReadRegDWORD $R0 HKLM "SYSTEM\CurrentControlSet\Control\FileSystem" "LongPathsEnabled"
+      ${Break}
+    ${Case} 2
+      StrCpy $R2 HKCU
+      ReadRegDWORD $R0 HKCU "SYSTEM\CurrentControlSet\Control\FileSystem" "LongPathsEnabled"
+      ${Break}
+    ${Case} 3
+      StrCpy $R2 HKCR
+      ReadRegDWORD $R0 HKCR "SYSTEM\CurrentControlSet\Control\FileSystem" "LongPathsEnabled"
+      ${Break}
+    ${Case} 4
+      StrCpy $R2 HKU
+      ReadRegDWORD $R0 HKU "SYSTEM\CurrentControlSet\Control\FileSystem" "LongPathsEnabled"
+      ${Break}
+    ${Case} 5
+      StrCpy $R2 HKCC
+      ReadRegDWORD $R0 HKCC "SYSTEM\CurrentControlSet\Control\FileSystem" "LongPathsEnabled"
+      ${Break}
+  ${EndSwitch}  
+FunctionEnd
+
+;-----------------------------------------------------------------
+; writeLongPathsEnabled: Function sets the DWORD value in LongPathsEnabled in the registry 
+;     Expects $R1 to have a value from 1 to 5 that maps to a registry key
+;       Cases 1 - 5 map to HKLM,HKCU,HKCR,HKU,HKCC (no easy way to do a for with strings)
+;     Sets $R2 to the corresponding registry key value
+;     If fails, will set error flag -- caller should check with ifErrors
+Function writeLongPathsEnabled
+  StrCpy $logstring "Reading Registry Variable LongPathsEnabled"
+  Call logMessage
+  ; Cases 1 - 5 map to HKLM,HKCU,HKCR,HKU,HKCC (no easy way to do a for with strings)
+  ${Switch} $R1
+        ${Case} 1
+          StrCpy $R2 HKLM
+          WriteRegDWORD HKLM "SYSTEM\CurrentControlSet\Control\FileSystem" "LongPathsEnabled" 1
+          ${Break}
+        ${Case} 2
+          StrCpy $R2 HKCU
+          WriteRegDWORD HKCU "SYSTEM\CurrentControlSet\Control\FileSystem" "LongPathsEnabled" 1
+          ${Break}
+        ${Case} 3
+          StrCpy $R2 HKCR
+          WriteRegDWORD HKCR "SYSTEM\CurrentControlSet\Control\FileSystem" "LongPathsEnabled" 1
+          ${Break}
+        ${Case} 4
+          StrCpy $R2 HKU
+          WriteRegDWORD HKU "SYSTEM\CurrentControlSet\Control\FileSystem" "LongPathsEnabled" 1
+          ${Break}
+        ${Case} 5
+          StrCpy $R2 HKCC
+          WriteRegDWORD HKCC "SYSTEM\CurrentControlSet\Control\FileSystem" "LongPathsEnabled" 1
+          ${Break}
+      ${EndSwitch}
+FunctionEnd
+
+;-----------------------------------------------------------------
+; addLongPathsEnabled: Function adds a new entry for LongPathsEnabled in the registry 
+;     Expects $R1 to have a value from 1 to 5 that maps to a registry key
+;     Expects $R2 to have the the corresponding registry key (HKLM,HKCU,HKCR,HKU,HKCC )
+;     Sets $R0 with the value from the registry if no error
+;     If fails, will set error flag -- caller should check with ifErrors
+Function addLongPathsEnabled  
+  StrCpy $logstring "Adding registry entry LongPathsEnabled in $R2"
+  Call logMessage
+  Call writeLongPathsEnabled
+  ifErrors errorExit
+  
+  ; Verify that it's set now
+  StrCpy $logstring "Verify registry entry was set correctly for LongPathsEnabled in $R2"
+  Call logMessage
+  
+  Call readLongPathsEnabled
+  ifErrors errorExit  
+  StrCpy $logstring "Registry LongPathsEnabled found: $R0"
+  Call logMessage
+  ${If} $R0 == 1
+    StrCpy $logstring "Registry LongPathsEnabled in $R2"
+    Call logMessage
+    StrCpy $found "true" 
+  ${Else} 
+    setErrors
+  ${EndIf}
+
+errorExit:
+FunctionEnd
+
+
+;----------------------------------------------------------------
+; macro breaks down a version in the form major.minor.patch
+; into its individual components so they can be compared.
+!macro VersionToComponents version major minor patch
+  Push "$R0"
+  Push "$R1"
+  Push "$R2"
+
+  StrCpy $R0 "${version}"
+  ${FindFirstChar} $R0 "." $R1
+  StrCpy ${major} $R0 $R1
+  StrCpy $R0 $R0 "" $R1 + 1
+
+  ${FindFirstChar} $R0 "." $R1
+  StrCpy ${minor} $R0 $R1
+  StrCpy ${patch} $R0 "" $R1 + 1
+
+  Pop $R2
+  Pop $R1
+  Pop $R0
+!macroend
+;-----------------------------------------------------------------
+; checkGitVersion: Function checks for git already installed
+;                  and its version number.
+; Expects the desired version to be in "$gitversion".  
+; Compares the installed git version (if any) to the desired version
+; Results pushed to the stack:
+; Push $thisVersion : version string found
+; Push $exitCode : "0" means version is installed and is >= desired version.
+Function checkGitVersion
+  Var /GLOBAL thisVersion
+  Var /GLOBAL versionOffset
+  Var /GLOBAL exitCode  
+  
+  StrCpy $thisVersion "Git version not found"  
+
+  ; Run 'git --version' and capture the output
+  StrCpy $logstring "Checking git version"
+  Call logMessage
+
+  StrCpy $tempLogFile "git_error.log"
+  ExecWait 'cmd /C git --version >$tempLogFile' $exitCode
+  StrCpy $logstring "   Return code: $exitCode"
+  Call logMessage
+  ${If} $exitCode == 0    
+  
+    ; Read the error log file content into a variable
+    FileOpen $0 $tempLogFile r
+    FileRead $0 $thisVersion
+    FileClose $0
+
+    StrCpy $logstring "git version results: $thisVersion"
+    Call logMessage
+  
+    ; Extract the version number from the output
+    ; The output will be in a form such as "git version x.y.z.windows.n", where we only want x.y.z (major.minor.patch)
+    ${StrLoc} $R0 $thisVersion "git version" ">" ; Find "git version" in the output - > is start of line
+    IntOp $R0 $R0 + 11 ; Move the pointer to version number, 11 spaces beyond the "git version"
+    StrCpy $thisVersion $thisVersion "" $R0 ; Extract the version number and beyond
+    ;StrCpy $logstring "thisVersion: $thisVersion"
+    ;Call logMessage
+
+    IntOp $versionOffset 0 - 0  ; start at 0
+    ; Keep only the portion of the version thru the third period
+    ${StrLoc} $R0 $thisVersion "." 0 ; Find first period (major)
+    IntOp $R0 $R0 + 1
+    IntOp $versionOffset $versionOffset + $R0
+    StrCpy $R1 $thisVersion "" $R0  ; R1 stripped of major version
+    ;StrCpy $logstring "R1: $R1"
+    ;Call logMessage
+
+    ${StrLoc} $R0 $R1 "."  $R0 ; find second period
+    IntOp $R0 $R0 + 1
+    IntOp $versionOffset $versionOffset + $R0
+    StrCpy $R1 $R1 "" $R0  ; R1 stripped of minor version
+    ;StrCpy $logstring "R1: $R1"
+    ;Call logMessage
+
+    ${StrLoc} $R0 $R1 "." $R0 ; location of third period
+    ${If} $R0 == "" ; no third period, so take whole string      
+      StrLen $R0 $R1
+    ${EndIf}
+    IntOp $versionOffset $versionOffset + $R0  ; total offset
+    StrCpy $thisVersion $thisVersion $versionOffset 0 ; Extract just the version number
+    ;StrCpy $logstring "extracted version number: $thisVersion"
+    ;Call logMessage
+
+    ; Prepare the version number for comparison by replacing any bad characters
+    ${VersionConvert} $thisVersion "" $thisVersion
+    ; Result expected in $R0: 0-Versions are equal; 1-thisVersion is newer; 2-gitversion is newer
+    ${VersionCompare} $thisVersion $gitversion $R0
+    StrCpy $logstring "VersionCompare result code: $R0"
+    Call logMessage
+
+    ${If} $R0 == "2"
+    StrCpy $logstring "Git version found: $thisVersion is less than desired $gitversion"
+      Call logMessage
+      StrCpy $exitCode "1" ; will require reinstall    
+    ${Else}
+      StrCpy $logstring "Git version found: $thisVersion is newer or equal to desired $gitversion"
+      Call logMessage
+      StrCpy $exitCode "0" ; will not require reinstall  
+    ${EndIf}
+
+  ${Else}
+      StrCpy $logstring "Git is not installed."
+      Call logMessage
+      StrCpy $exitCode "1" ; will require install
+  ${EndIf}
+
+Push $thisVersion
+Push $exitCode
+FunctionEnd
+
+;-----------------------------------------------------------------
+; gitPullAZT: Function gets drive and path where AZT repo lives
+;             Switches to that directory and does a git pull
+;             The switches back to the installation drive and directory
+;
+Function gitPullAZT
+  StrCpy $logstring "---- gitPullAZT ---- "
+  Call logMessage
+
+  ; Save the current installation path
+  Var /GLOBAL SaveCurrentDirectory
+  StrCpy $SaveCurrentDirectory $EXEDIR
+  StrCpy $logstring "Saving current directory: $SaveCurrentDirectory"
+  Call logMessage    
+
+  ; Get the current script's drive letter
+  Var /GLOBAL ExeDrive
+  ${GetRoot} $EXEDIR $ExeDrive
+  StrCpy $logstring "GetRoot: Current drive: $ExeDrive"
+  Call logMessage
+  
+  ; Store the target directory (modify as needed)
+  StrCpy $1 $INSTDIR
+
+  ; Get the drive letter of the target directory
+  Var /GLOBAL InstDrive
+  ${GetRoot} "$1" $InstDrive
+  StrCpy $logstring "GetRoot: Target drive: $InstDrive"
+  Call logMessage
+
+  ; Compare current drive ($ExeDrive) with the target drive ($InstDrive)
+  StrCmp $ExeDrive $InstDrive noDriveChange 0
+
+  ; If the drives are different, switch to the target drive
+  StrCpy $logstring "Switching to Drive: $InstDrive"
+  Call logMessage
+  ExecWait "$InstDrive"
+
+noDriveChange:
+  ; Now change to the target directory
+  SetOutPath "$1"
+  StrCpy $logstring "Switched to $OUTDIR"
+  Call logMessage  
+  
+  ; Do a git pull in the target directory
+  StrCpy $logstring "Executing git pull origin...."
+  Call logMessage
+    
+  StrCpy $tempLogFile "git_error.log"
+  ClearErrors
+  ExecWait 'cmd /C $\"$gitexe$\" pull origin 2>$tempLogFile' $0
+  StrCpy $logstring "   Return value: $0"
+  Call logMessage
+  ${If} $0 != 0
+
+    ; Check if the git clone was successful
+    ;IfErrors 0 aztNoErrors
+
+    ; Read the error log file content into a variable
+    FileOpen $0 $tempLogFile r
+    FileRead $0 $ReturnError
+    FileClose $0
+
+    StrCpy $logstring "git pull origin returned error: ${NEWLINE}$ReturnError"
+    Call logMessage
+  ${EndIf}
+
+  ; Switch back to the installation drive and directory
+  ; Compare current drive ($ExeDrive) with the target drive ($InstDrive)
+  StrCmp $ExeDrive $InstDrive noDriveChange2 0
+
+  ; If the drives are different, switch to the target drive
+  StrCpy $logstring "Switching to Drive: $ExeDrive"
+  Call logMessage
+  ExecWait "$ExeDrive"
+
+noDriveChange2:
+  
+  ; Return to the exectutable path
+  SetOutPath $SaveCurrentDirectory
+
+  StrCpy $logstring "Switched to $OUTDIR"
+  Call logMessage
+  Return
 
 FunctionEnd

@@ -1,0 +1,11 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# List files here to be excluded
+*.zip
+*.log
+Charis*
+
+# Ignore all .exe files
+*.exe
+# But do not ignore AZT_Installer.exe
+!AZT_Installer.exe
