@@ -41,12 +41,15 @@
   Var /GLOBAL pythonfilename
   Var /GLOBAL pythonsize
   Var /GLOBAL pythonurl
+  Var /GLOBAL pythonPath
+  Var /GLOBAL pythonExe
 
   Var /GLOBAL gitversion
   Var /GLOBAL gitfilename
   Var /GLOBAL gitsize
   Var /GLOBAL giturl
-  Var /GLOBAL gitexe
+  Var /GLOBAL gitExe
+  Var /GLOBAL gitPath
 
   Var /GLOBAL praatversion
   Var /GLOBAL praatfilename
@@ -81,6 +84,7 @@
   Var /GLOBAL downloadName
   Var /GLOBAL ReturnError
   Var /GLOBAL tempLogFile
+  Var /GLOBAL windowsAZTFile
   
 
 
@@ -272,6 +276,8 @@ ${EndIf}
 
 ;--------------------------------
 pythonEnd:
+  call getPythonPath
+  StrCpy $logstring "Using Python path: $pythonExe"
 SectionEnd
 
 ;***************************************************************************************
@@ -349,65 +355,8 @@ Section "Git" gitId
 ;--------------------------------
 gitEnd: 
 
-  ; Run 'git --version' and capture the output
-  StrCpy $logstring "Checking git version"
-  Call logMessage
-
-  ; Search for the full path of git to use in ExecToStack
-  StrCpy $0 "git.exe"
-  SearchPath $R1 $0 ; $R1 will hold the full path to git.exe if it is found in environment 
-
-  ; If git was just installed, it will not be in the current environment yet, so 
-  ; we have to find it manually by searching for it in program files
-  ; Assuming it will be in Git/cmd/git.exe in one of the two program files directories
-  ${If} $R1 == ""
-    StrCpy $logstring "git.exe path not found."
-    Call logMessage      
-    
-    StrCpy $R0 "git.exe"
-    StrCpy $R1 ""  ; This will hold the result
-    ; Program Files (64-bit)
-    StrCpy $R2 "$PROGRAMFILES64\Git\cmd"
-    StrCpy $logstring "Searching for git in $R2 ..."
-    Call logMessage
-    ${Locate} "$R2" "/G=0 /M=$R0" "FindHandlerCallBack"  
-    ${If} $R1 != ""
-      ; set path temporarily 
-      ExecWait 'set path=%path%;$R2'
-      Goto gitFound
-    ${Else}
-      ; Program Files (x86)
-      StrCpy $R2 "$PROGRAMFILES32\Git\cmd"
-      StrCpy $logstring "Searching for git in $R2 ..."
-      Call logMessage
-      ${Locate} "$R2" "/G=0 /M=$R0" "FindHandlerCallBack"
-      ${If} $R1 != ""
-        ; set path temporarily 
-        ExecWait 'set path=%path%;$R2'
-        Goto gitFound
-      ${Else}
-        StrCpy $logstring "Unable to locat git.exe.  Terminating installation."
-        Call logMessage
-        MessageBox MB_OK|MB_ICONEXCLAMATION $logstring
-        Abort
-      ${EndIf}
-    ${EndIf}
-  ${EndIf}
-
-gitFound:
-  ; Search for git again to see if 'set path' helps
-  StrCpy $0 "git.exe"
-  SearchPath $R3 $0 ; $R3 will hold the full path to git.exe if it is found in environment   
-  ${If} $R3 == ""
-    ; Still not found, even after attempting to add to path above, so set to full path name
-    StrCpy $gitexe $R1  ; use full path found above
-    StrCpy $logstring "Git full path: $gitexe"
-    Call logMessage
-  ${Else}
-    StrCpy $gitexe "git"
-    StrCpy $logstring "Git path found.  Setting gitexe to : $gitexe"
-    Call logMessage
-  ${EndIf}
+  call getGitPath
+  StrCpy $logstring "Using Git path: $gitExe"
 
 SectionEnd
 
@@ -418,7 +367,7 @@ Section "AZT" aztId
   ;----------------------------------------------------------------
   !insertmacro MUI_HEADER_TEXT_PAGE "${TITLENAME}" "Installing AZT from Git repository..."
   StrCpy $logstring "${NEWLINE}-----  AZT Installer ----- "
-  Call logMessage
+  Call logMessage    
   
   ; Initialize variables and constants
   !define REPO_NAME "azt.git"
@@ -512,7 +461,6 @@ ${Else}
   Call logMessage
 ${EndIf}
 
-
 StrCpy $logstring "Cloning A-Z+T source to $INSTDIR"
 Call logMessage
 
@@ -540,48 +488,48 @@ ClearErrors
 ;                     git config --system --get-all safe.directory
 ;                   To clear them: 
 ;                     git config --system --unset-all safe.directory
-StrCpy $logstring "Executing $\"$gitexe$\" config --system --add safe.directory $INSTDIR ..."
+StrCpy $logstring "Executing $\"$gitExe$\" config --system --add safe.directory $INSTDIR ..."
 Call logMessage
 
 ; Define the path to the log file
 StrCpy $tempLogFile "git_error.log"
-${If} $gitexe == ""  ; Should have been set during git install, else assume path is in env.
-  StrCpy $logstring "gitexe variable is not set - using 'git'"
-  StrCpy $gitexe "git"
+${If} $gitExe == ""  ; Should have been set during git install, else assume path is in env.
+  StrCpy $logstring "gitExe variable is not set - using 'git'"
+  StrCpy $gitExe "git"
 ${EndIf}
 
-ExecWait 'cmd /C $\"$gitexe$\" config --system --add safe.directory $INSTDIR 2>$tempLogFile' $0
+ExecWait 'cmd /C $\"$gitExe$\" config --system --add safe.directory $INSTDIR 2>$tempLogFile' $0
 StrCpy $logstring "   Return value: $0"
 Call logMessage
 ifErrors errorExitAzt
 
 StrCpy $logstring "Executing git config --system --add safe.directory $newPathString ..."
 Call logMessage
-ExecWait 'cmd /C $\"$gitexe$\" config --system --add safe.directory $newPathString >$tempLogFile' $0
+ExecWait 'cmd /C $\"$gitExe$\" config --system --add safe.directory $newPathString >$tempLogFile' $0
 StrCpy $logstring "   Return value: $0"
 Call logMessage
 ifErrors errorExitAzt
 
 StrCpy $logstring "Executing git config --global --add safe.directory $INSTDIR ..."
-ExecWait 'cmd /C $\"$gitexe$\" config --global --add safe.directory $INSTDIR >$tempLogFile' $0
+ExecWait 'cmd /C $\"$gitExe$\" config --global --add safe.directory $INSTDIR >$tempLogFile' $0
 StrCpy $logstring "   Return value: $0"
 Call logMessage
 ifErrors errorExitAzt
 
 StrCpy $logstring "Executing git config --global --add safe.directory $newPathString ..."
-ExecWait 'cmd /C $\"$gitexe$\" config --global --add safe.directory $newPathString >$tempLogFile' $0
+ExecWait 'cmd /C $\"$gitExe$\" config --global --add safe.directory $newPathString >$tempLogFile' $0
 StrCpy $logstring "   Return value: $0"
 Call logMessage
 ifErrors errorExitAzt
 
-StrCpy $logstring "Executing $\"$gitexe$\" clone $azt $INSTDIR"
+StrCpy $logstring "Executing $\"$gitExe$\" clone $azt $INSTDIR"
 Call logMessage
 ClearErrors
 
 ; Use ExecToStack instead of ExecWait to prevent the windows command prompt from showing
 ; The problem is on first install, this won't find git, 
 ; so we have to search for the full path to feed to the command line
-nsExec::ExecToStack 'cmd /C "$\"$gitexe$\"" clone $azt $INSTDIR 2>$tempLogFile'
+nsExec::ExecToStack 'cmd /C "$\"$gitExe$\"" clone $azt $INSTDIR 2>$tempLogFile'
 Pop $0
 StrCpy $logstring "   Return value: $0"
 Call logMessage
@@ -610,8 +558,7 @@ ${If} $0 != 0
   ${EndIf}
 ${EndIf}
 
-;aztNoErrors:
-  
+ 
   ;----------------------------------------------------------------  
   ; Successful install of AZT, set up shortcuts
   ;
@@ -1608,13 +1555,10 @@ noDriveChange:
     
   StrCpy $tempLogFile "git_error.log"
   ClearErrors
-  ExecWait 'cmd /C $\"$gitexe$\" pull origin 2>$tempLogFile' $0
+  ExecWait 'cmd /C $\"$gitExe$\" pull origin 2>$tempLogFile' $0
   StrCpy $logstring "   Return value: $0"
   Call logMessage
   ${If} $0 != 0
-
-    ; Check if the git clone was successful
-    ;IfErrors 0 aztNoErrors
 
     ; Read the error log file content into a variable
     FileOpen $0 $tempLogFile r
@@ -1642,5 +1586,122 @@ noDriveChange2:
   StrCpy $logstring "Switched to $OUTDIR"
   Call logMessage
   Return
+
+FunctionEnd
+
+;-----------------------------------------------------------------
+; getPythonPath: Function searches for python executable.
+;                If not found, runs a separate windows shell 
+;                to pull the path from the environment variable
+Function getPythonPath
+
+; Search for the full path of python
+StrCpy $0 "python.exe"
+SearchPath $R1 $0 ; $R1 will hold the full path to python.exe if it is found in environment 
+
+; If python was just installed, it will not be in the current environment yet, so 
+; we have to find it in a roundabout way, by executing a second shell and using the 
+; Windows "where" command
+${If} $R1 == ""
+  StrCpy $logstring "python.exe path not found."
+  Call logMessage
+  StrCpy $R8 "getpythonpath.cmd"
+  FileOpen $R9 $R8 w
+  FileWrite $R9 "@echo off${NEWLINE}"
+  FileWrite $R9 "call :runme-2 1>pathfile.txt${NEWLINE}"
+  FileWrite $R9 "exit /B${NEWLINE}"
+  FileWrite $R9 ":runme-2${NEWLINE}"
+  FileWrite $R9 "where python${NEWLINE}"
+  FileClose $R9 
+
+  ClearErrors
+  ExecWait "cmd /C getpythonpath.cmd" $0
+
+  StrCpy $logstring "getpythonpath return code: $0"
+  Call logMessage
+  ${If} $0 != 0
+    StrCpy $logstring "Error getting python path"
+    Call logMessage
+    MessageBox MB_OK|MB_ICONEXCLAMATION $logstring
+    Abort
+  ${EndIf}
+
+  StrCpy $R8 "pathfile.txt"
+  ; Read the error log file content into a variable
+  FileOpen $R9 $R8 r
+  FileRead $R9 $R7
+  FileClose $R9
+
+  StrCpy $pythonPath $R7  
+  StrCpy $logstring "python path: $pythonPath"
+  Call logMessage
+
+  StrCpy $pythonExe "$pythonPath\python.exe"
+${Else}
+  ; if it can be found directly, no need to use whole path
+  StrCpy $pythonExe "python"
+${EndIf}
+
+StrCpy $logstring "Python Path: $pythonExe"
+Call logMessage
+ 
+FunctionEnd
+
+;-----------------------------------------------------------------
+; getGitPath: Function searches for git executable.
+;             If not found, runs a separate windows shell 
+;             to pull the path from the environment variable
+Function getGitPath
+
+; Search for the full path of git
+StrCpy $0 "git.exe"
+SearchPath $R1 $0 ; $R1 will hold the full path to git.exe if it is found in environment 
+
+; If git was just installed, it will not be in the current environment yet, so 
+; we have to find it in a roundabout way, by executing a second shell and using the 
+; Windows "where" command
+${If} $R1 == ""
+  StrCpy $logstring "git.exe path not found."
+  Call logMessage
+
+  StrCpy $R8 "getgitpath.cmd"
+  FileOpen $R9 $R8 w
+  FileWrite $R9 "@echo off${NEWLINE}"
+  FileWrite $R9 "call :runme-2 1>pathfile.txt${NEWLINE}"
+  FileWrite $R9 "exit /B${NEWLINE}"
+  FileWrite $R9 ":runme-2${NEWLINE}"
+  FileWrite $R9 "where git${NEWLINE}"
+  FileClose $R9 
+
+  ExecWait "cmd /C getgitpath.cmd" $0
+
+  StrCpy $logstring "getgitpath return code: $0"
+  Call logMessage
+  ${If} $0 != 0
+    StrCpy $logstring "Error getting git path"
+    Call logMessage
+    MessageBox MB_OK|MB_ICONEXCLAMATION $logstring
+    Abort
+  ${EndIf}
+
+  StrCpy $R8 "pathfile.txt"
+  ; Read the error log file content into a variable
+  FileOpen $R9 $R8 r
+  FileRead $R9 $R7
+  FileClose $R9
+
+  StrCpy $gitPath $R7  
+  StrCpy $logstring "git path: $gitPath"
+  Call logMessage
+
+  StrCpy $gitExe "$gitPath\git.exe"
+
+${Else}
+  ; if it can be found directly, no need to use whole path
+  StrCpy $gitExe "git"
+${EndIf}
+
+StrCpy $logstring "Git Path: $gitExe"
+Call logMessage 
 
 FunctionEnd

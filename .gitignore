@@ -3,6 +3,8 @@
 # List files here to be excluded
 *.zip
 *.log
+*.cmd
+*.txt
 Charis*
 
 # Ignore all .exe files
