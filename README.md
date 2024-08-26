@@ -70,13 +70,14 @@ The following are not part of the NSIS base installation.  Zip files provided sh
 - Python is required to run A-Z+T.
 
 - Git is required to clone the A-Z+T repository during installation.
-- If Git is installed for the first time, the installer will not recognize the enviornment path in subsequent commands.  In this case, it will search for \Git\Cmd in the two Program Files directories (32 and 64 bit) and will use this path to git.exe for subsequent git commands.
 
 - If the AZT directory exists, `git pull origin` will refresh the code to the latest version .
 
 - Charis SIL fonts will be installed if possible, but if installation of the fonts fails, the installer will not fail.   
 
 - If installation of any of the optional components fails, the installer will continue attempting to install remaining components.
+
+- If Python and/or Git are installed for the first time, the installer will not find them in the subsequent commands.  So we run a windows batch file from a second shell to get the updated path into an output file and then read the path in for use in the remainder of the script.   
 
 ## References
 

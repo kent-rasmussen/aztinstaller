@@ -19,6 +19,7 @@
   ${StrStr} 
   ${StrRep}
   ${StrLoc}
+  ${StrTrimNewLines}
 
 ; Macro and Function for ${Locate} to find folders from FileFunc
   !insertmacro Locate
@@ -84,10 +85,7 @@
   Var /GLOBAL downloadName
   Var /GLOBAL ReturnError
   Var /GLOBAL tempLogFile
-  Var /GLOBAL windowsAZTFile
   
-
-
 
 ;------------------------------------------------------------------------------
 ;General
@@ -277,7 +275,15 @@ ${EndIf}
 ;--------------------------------
 pythonEnd:
   call getPythonPath
-  StrCpy $logstring "Using Python path: $pythonExe"
+  ${If} $pythonExe == ""
+    StrCpy $logstring "Unable to find python.  Terminating installation."
+    Call logMessage
+    MessageBox MB_OK $logstring
+    Abort
+  ${Else}
+    StrCpy $logstring "Using Python path: $pythonExe"
+  ${EndIf}
+  
 SectionEnd
 
 ;***************************************************************************************
@@ -356,7 +362,15 @@ Section "Git" gitId
 gitEnd: 
 
   call getGitPath
-  StrCpy $logstring "Using Git path: $gitExe"
+  ${If} $gitExe == ""
+    StrCpy $logstring "Unable to find git.  Terminating installation."
+    Call logMessage
+    MessageBox MB_OK $logstring
+    Abort
+  ${Else}
+    StrCpy $logstring "Using Git path: $gitExe"
+  ${EndIf}
+  
 
 SectionEnd
 
@@ -1244,13 +1258,19 @@ FunctionEnd
 ; .onInstSuccess - Executes at the end of a successful installation 
 Function .onInstSuccess
     StrCpy $logstring "Installation completed successfully.${NEWLINE}${NEWLINE}A-Z+T will be launched now to finish configuration."
-    Call logMessage
-    FileClose $log0
+    Call logMessage    
     MessageBox MB_OK $logstring
     StrCpy $logstring  "Doing first run of A-Z+T, to make sure modules are installed..."
     Call logMessage
+
+    ; File cleanup - close log and delete temp logs
+    FileClose $log0
+    Delete "git_error.log"
+    Delete "charis_error.log"
+    Delete "praat_error.log"
+    
     ClearErrors
-    ExecShell "open" "python.exe" "$aztfilename" SW_SHOW
+    ExecShell "open" "$pythonExe" "$aztfilename" SW_SHOW
 FunctionEnd
 
 ;-----------------------------------------------------------------
@@ -1595,53 +1615,64 @@ FunctionEnd
 ;                to pull the path from the environment variable
 Function getPythonPath
 
-; Search for the full path of python
-StrCpy $0 "python.exe"
-SearchPath $R1 $0 ; $R1 will hold the full path to python.exe if it is found in environment 
+StrCpy $logstring "Running python --version to see if git can be found."
+Call logMessage
 
-; If python was just installed, it will not be in the current environment yet, so 
-; we have to find it in a roundabout way, by executing a second shell and using the 
-; Windows "where" command
-${If} $R1 == ""
-  StrCpy $logstring "python.exe path not found."
+ExecWait 'cmd /C python --version >temp.txt' $0
+StrCpy $logstring "Python --version return code: $0"
+Call logMessage
+${If} $0 != 0
+
+  ; If Python was just installed, it will not be in the current environment yet, so 
+  ; we have to find it in a roundabout way, by executing a second shell 
+  ; with runas running at user level.  This seems to cause the shell to pick up the new path.
+  ; Use the "where" command to find the path.
+
+  StrCpy $logstring "Python not found. Trying to find the path using windows shell..."  
   Call logMessage
-  StrCpy $R8 "getpythonpath.cmd"
-  FileOpen $R9 $R8 w
+  
+  FileOpen $R9 "getpythonpath.cmd" w
   FileWrite $R9 "@echo off${NEWLINE}"
-  FileWrite $R9 "call :runme-2 1>pathfile.txt${NEWLINE}"
+  FileWrite $R9 "call :skiptorun 1>pythonpath.txt${NEWLINE}"
   FileWrite $R9 "exit /B${NEWLINE}"
-  FileWrite $R9 ":runme-2${NEWLINE}"
+  FileWrite $R9 ":skiptorun${NEWLINE}"
   FileWrite $R9 "where python${NEWLINE}"
+  FileClose $R9
+  
+  FileOpen $R9 "runpythonpath.cmd" w
+  FileWrite $R9 "@echo off${NEWLINE}"
+  FileWrite $R9 "runas /trustlevel:0x20000 getpythonpath.cmd${NEWLINE}"
+  FileWrite $R9 "exit /B${NEWLINE}"
   FileClose $R9 
 
   ClearErrors
-  ExecWait "cmd /C getpythonpath.cmd" $0
+  ExecShellWait "" "runpythonpath.cmd" SW_HIDE
+  ifErrors 0 noErrors
+  StrCpy $logstring "Error getting python path"
+  Call logMessage  
+  
+noErrors:
 
-  StrCpy $logstring "getpythonpath return code: $0"
-  Call logMessage
-  ${If} $0 != 0
-    StrCpy $logstring "Error getting python path"
-    Call logMessage
-    MessageBox MB_OK|MB_ICONEXCLAMATION $logstring
-    Abort
-  ${EndIf}
-
-  StrCpy $R8 "pathfile.txt"
   ; Read the error log file content into a variable
-  FileOpen $R9 $R8 r
+  FileOpen $R9 "pythonpath.txt" r
   FileRead $R9 $R7
   FileClose $R9
 
-  StrCpy $pythonPath $R7  
+  StrCpy $pythonPath $R7
+  ${StrTrimNewLines} $pythonPath $pythonPath
   StrCpy $logstring "python path: $pythonPath"
   Call logMessage
 
-  StrCpy $pythonExe "$pythonPath\python.exe"
+  StrCpy $pythonExe "$pythonPath"
 ${Else}
   ; if it can be found directly, no need to use whole path
   StrCpy $pythonExe "python"
 ${EndIf}
 
+Delete "getpythonpath.cmd"
+Delete "runpythonpath.cmd"
+Delete "pythonpath.txt"
+Delete "temp.txt"
 StrCpy $logstring "Python Path: $pythonExe"
 Call logMessage
  
@@ -1653,54 +1684,65 @@ FunctionEnd
 ;             to pull the path from the environment variable
 Function getGitPath
 
-; Search for the full path of git
-StrCpy $0 "git.exe"
-SearchPath $R1 $0 ; $R1 will hold the full path to git.exe if it is found in environment 
+StrCpy $logstring "Running git --version to see if git can be found."
+Call logMessage
 
-; If git was just installed, it will not be in the current environment yet, so 
-; we have to find it in a roundabout way, by executing a second shell and using the 
-; Windows "where" command
-${If} $R1 == ""
-  StrCpy $logstring "git.exe path not found."
+ExecWait 'cmd /C git --version >temp.txt' $0
+StrCpy $logstring "Git --version return code: $exitCode"
+Call logMessage
+${If} $0 != 0
+
+  ; If git was just installed, it will not be in the current environment yet, so 
+  ; we have to find it in a roundabout way, by executing a second shell 
+  ; with runas running at user level.  This seems to cause the shell to pick up the new path.
+  ; Use the "where" command to find the path.
+
+  StrCpy $logstring "git not found. Trying to find the path using windows shell..."
   Call logMessage
-
-  StrCpy $R8 "getgitpath.cmd"
-  FileOpen $R9 $R8 w
+  
+  FileOpen $R9 "getgitpath.cmd" w
   FileWrite $R9 "@echo off${NEWLINE}"
-  FileWrite $R9 "call :runme-2 1>pathfile.txt${NEWLINE}"
+  FileWrite $R9 "call :skiptorun 1>gitpath.txt${NEWLINE}"
   FileWrite $R9 "exit /B${NEWLINE}"
-  FileWrite $R9 ":runme-2${NEWLINE}"
+  FileWrite $R9 ":skiptorun${NEWLINE}"
   FileWrite $R9 "where git${NEWLINE}"
   FileClose $R9 
+  
+  FileOpen $R9 "rungitpath.cmd" w
+  FileWrite $R9 "@echo off${NEWLINE}"
+  FileWrite $R9 "runas /trustlevel:0x20000 getgitpath.cmd${NEWLINE}"
+  FileWrite $R9 "exit /B${NEWLINE}"
+  FileClose $R9 
 
-  ExecWait "cmd /C getgitpath.cmd" $0
-
-  StrCpy $logstring "getgitpath return code: $0"
+  ClearErrors
+  ExecShellWait "" "rungitpath.cmd" SW_HIDE
+  ifErrors 0 noErrors
+  StrCpy $logstring "Error getting git path"
   Call logMessage
-  ${If} $0 != 0
-    StrCpy $logstring "Error getting git path"
-    Call logMessage
-    MessageBox MB_OK|MB_ICONEXCLAMATION $logstring
-    Abort
-  ${EndIf}
-
-  StrCpy $R8 "pathfile.txt"
+   
+noErrors:
+  
   ; Read the error log file content into a variable
-  FileOpen $R9 $R8 r
+  FileOpen $R9 "gitpath.txt" r
   FileRead $R9 $R7
   FileClose $R9
 
-  StrCpy $gitPath $R7  
+  StrCpy $gitPath $R7
+  ${StrTrimNewLines} $gitPath $gitPath
   StrCpy $logstring "git path: $gitPath"
   Call logMessage
 
-  StrCpy $gitExe "$gitPath\git.exe"
+  StrCpy $gitExe "$gitPath"
 
 ${Else}
   ; if it can be found directly, no need to use whole path
   StrCpy $gitExe "git"
 ${EndIf}
 
+Delete "getgitpath.cmd"
+Delete "rungitpath.cmd"
+Delete "gitpath.txt"
+Delete "temp.txt"
 StrCpy $logstring "Git Path: $gitExe"
 Call logMessage 
 
