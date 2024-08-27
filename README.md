@@ -30,7 +30,7 @@ Select components to install.   Grayed out components are required.
 
 ### Notes
 
-During installation, if a component has already been installed and is at the required version, the installer will skip installation of that component.
+During installation, if a component has already been installed and is at the required version, the installer will skip installation of that component.  If the component is at an older version, the installer will install the newer verison.
 
 If successful, the installer will launch A-Z+T (main.py).  The first time A-Z+T is launched, it will perform some scaling configuration, which may take a few minutes.  
 
@@ -53,6 +53,7 @@ The script file is AZT_Installer_UI.nsi.
   !include FileFunc.nsh
   !include StrFunc.nsh    
   !include WinMessages.nsh
+  
 ```
 
 ### Plugins

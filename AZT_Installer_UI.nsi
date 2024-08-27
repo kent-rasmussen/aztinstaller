@@ -36,7 +36,7 @@
   !define INSTALLERNAME "AZT_Installer"  ; original name
 
 ;--------------------------------
-; Global variables
+; Global variables    (Ref: See "Function .onInit" for initialization of values)
 
   Var /GLOBAL pythonversion
   Var /GLOBAL pythonfilename
@@ -85,6 +85,9 @@
   Var /GLOBAL downloadName
   Var /GLOBAL ReturnError
   Var /GLOBAL tempLogFile
+  Var /Global cmdFile
+  Var /Global pathFile
+  Var /GLOBAL desiredVersion
   
 
 ;------------------------------------------------------------------------------
@@ -163,15 +166,28 @@
 
 ;***************************************************************************************
 Section "Python" pythonId
-  
+  ;goto pythonEnd
   ;----------------------------------------------------------------
   !insertmacro MUI_HEADER_TEXT_PAGE "${TITLENAME}"  "Installing Python..."
   StrCpy $logstring "${NEWLINE}-----  Python Installer ----- "
   Call logMessage
 
+  StrCpy $downloadName "python"
+
+  ; Check if desired or later Git is already installed
+  StrCpy $desiredVersion $pythonVersion
+  Call checkVersion  
+  Pop $0
+  ${If} $0 == "0"
+    Pop $1
+    StrCpy $logstring "$downloadName is already installed, version is <$1>, skipping installation."
+    Call logMessage
+    goto pythonEnd
+  ${EndIf}  
+
   ; Check if Python Installer file was already downloaded previously
   FindFirst $0 $1 "$pythonfilename"
-  StrCpy $logstring "Python file search: $0 $1"
+  StrCpy $logstring "$downloadName file search: $0 $1"
   Call logMessage
   FindClose $0
 
@@ -209,11 +225,35 @@ Section "Python" pythonId
 
   ${If} $0 != 0
     ${If} $0 == 1603
-      StrCpy $logstring "Python is already installed, skipping installation."
+      StrCpy $logstring "Python is already installed."
       Call logMessage
+
+      ; consider using these to uninstall old versions of python??
+      ;wmic product where "name like 'Python%'" get version
+      ;wmic product where "version='X.X.X'" call uninstall
+
+
+      ; Uninstall existing Python
+      ; MessageBox MB_YESNO "Python is already installed. Do you want to uninstall it?" IDYES uninstall_python
+
+      ; uninstall_python:
+      ;   StrCpy $logstring "Finding filepath where python is installed..."
+      ;   Call logMessage
+      ;   FindFirst $0 $1 "$pythonfilename"
+      ;   StrCpy $logstring "Python file search: $0 $1"
+      ;   Call logMessage
+      ;   FindClose $0
+
+      ;   ${If} $1 == $pythonfilename
+        
+      ;   StrCpy $logstring "Uninstalling python...."
+      ;   Call logMessage
+      ;   ; Locate the uninstaller and run it
+      ;   ExecWait '$0\Uninstall.exe /silent'
     ${Else}
       StrCpy $logstring "ERROR: Python $pythonversion Installation failed with return code: $0" 
       Call logMessage
+      MessageBox MB_OK|MB_ICONEXCLAMATION $logstring /SD IDOK
       Abort
     ${EndIf}    
   ${Else}
@@ -276,9 +316,9 @@ ${EndIf}
 pythonEnd:
   call getPythonPath
   ${If} $pythonExe == ""
-    StrCpy $logstring "Unable to find python.  Terminating installation."
+    StrCpy $logstring "Unable to find python.  You may need to run this installer again to complete the full installation."
     Call logMessage
-    MessageBox MB_OK $logstring
+    MessageBox MB_OK|MB_ICONEXCLAMATION $logstring /SD IDOK
     Abort
   ${Else}
     StrCpy $logstring "Using Python path: $pythonExe"
@@ -294,10 +334,11 @@ Section "Git" gitId
   StrCpy $logstring "${NEWLINE}-----  Git Installer ----- "
   Call logMessage
 
-  StrCpy $downloadName "Git"  
+  StrCpy $downloadName "git"
 
   ; Check if desired or later Git is already installed
-  Call checkGitVersion  
+  StrCpy $desiredVersion $gitVersion
+  Call checkVersion  
   Pop $0
   ${If} $0 == "0"
     Pop $1
@@ -327,8 +368,8 @@ Section "Git" gitId
     Pop $0 ;Get the return value
     ${If} $0 != 'OK'
       StrCpy $logstring "ERROR: $0.  Unable to download $downloadName. Installation aborted."
-      MessageBox MB_OK|MB_ICONEXCLAMATION $logstring /SD IDOK
       Call logMessage
+      MessageBox MB_OK|MB_ICONEXCLAMATION $logstring /SD IDOK      
       Abort
     ${Else}
       StrCpy $logstring "$downloadName downloaded successfully."
@@ -351,6 +392,7 @@ Section "Git" gitId
     ${Else}
       StrCpy $logstring "ERROR: $downloadName $gitversion Installation failed with return code: $0" 
       Call logMessage
+      MessageBox MB_OK|MB_ICONEXCLAMATION $logstring /SD IDOK
       Abort
     ${EndIf}    
   ${Else}
@@ -363,9 +405,9 @@ gitEnd:
 
   call getGitPath
   ${If} $gitExe == ""
-    StrCpy $logstring "Unable to find git.  Terminating installation."
+    StrCpy $logstring "Unable to find git.  You may need to run this installer again to complete the full installation."
     Call logMessage
-    MessageBox MB_OK $logstring
+    MessageBox MB_OK|MB_ICONEXCLAMATION $logstring /SD IDOK
     Abort
   ${Else}
     StrCpy $logstring "Using Git path: $gitExe"
@@ -567,7 +609,7 @@ ${If} $0 != 0
     ; Display the error message
     StrCpy $logstring "There was an error getting the repository:${NEWLINE}${NEWLINE}$ReturnError${NEWLINE}${NEWLINE}Make sure your internet (or USB repository) is connected."
     Call logMessage
-    MessageBox MB_OK|MB_ICONEXCLAMATION $logstring
+    MessageBox MB_OK|MB_ICONEXCLAMATION $logstring /SD IDOK
     Abort
   ${EndIf}
 ${EndIf}
@@ -623,7 +665,7 @@ errorExitAzt:
   ${EndIf}
   StrCpy $logstring "Error cloning AZT"
   Call logMessage
-  MessageBox MB_OK|MB_ICONEXCLAMATION $logstring
+  MessageBox MB_OK|MB_ICONEXCLAMATION $logstring /SD IDOK
   Abort
 
 ;--------------------------------
@@ -1246,8 +1288,8 @@ Function .onInit
   ${Else}
     ; StrCpy $logstring "Installer is not able to run with admin rights, installing for current user only: $0"
     StrCpy $logstring "Installer must be run as Administrator."
-    MessageBox MB_OK $logstring
     Call logMessage
+    MessageBox MB_OK|MB_ICONEXCLAMATION $logstring /SD IDOK
     StrCpy $withadmin "0"
     Abort
   ${EndIf}  
@@ -1263,13 +1305,15 @@ Function .onInstSuccess
     StrCpy $logstring  "Doing first run of A-Z+T, to make sure modules are installed..."
     Call logMessage
 
-    ; File cleanup - close log and delete temp logs
-    FileClose $log0
+    ; File cleanup - close log and delete temp logs    
     Delete "git_error.log"
     Delete "charis_error.log"
     Delete "praat_error.log"
     
     ClearErrors
+    StrCpy $logstring  "ExecShell open $pythonExe $aztfilename SW_SHOW"
+    Call logMessage
+    FileClose $log0
     ExecShell "open" "$pythonExe" "$aztfilename" SW_SHOW
 FunctionEnd
 
@@ -1433,26 +1477,28 @@ FunctionEnd
   Pop $R0
 !macroend
 ;-----------------------------------------------------------------
-; checkGitVersion: Function checks for git already installed
+; checkVersion: Function checks for app already installed
 ;                  and its version number.
-; Expects the desired version to be in "$gitversion".  
-; Compares the installed git version (if any) to the desired version
+; Inputs:  global variables should be set to:
+;          $downloadName = app name (python or git)
+;          $desiredVersion = the desired version we need to download
+; Compares the installed version (if any) to the desired version
 ; Results pushed to the stack:
 ; Push $thisVersion : version string found
 ; Push $exitCode : "0" means version is installed and is >= desired version.
-Function checkGitVersion
+Function checkVersion
   Var /GLOBAL thisVersion
   Var /GLOBAL versionOffset
   Var /GLOBAL exitCode  
   
-  StrCpy $thisVersion "Git version not found"  
+  StrCpy $thisVersion "Desired version not found"  
 
-  ; Run 'git --version' and capture the output
-  StrCpy $logstring "Checking git version"
+  ; Run '<app> --version' and capture the output
+  StrCpy $logstring "Checking app version"
   Call logMessage
 
-  StrCpy $tempLogFile "git_error.log"
-  ExecWait 'cmd /C git --version >$tempLogFile' $exitCode
+  StrCpy $tempLogFile "$downloadName_version.txt"
+  ExecWait 'cmd /C $downloadName --version >$tempLogFile' $exitCode
   StrCpy $logstring "   Return code: $exitCode"
   Call logMessage
   ${If} $exitCode == 0    
@@ -1462,16 +1508,28 @@ Function checkGitVersion
     FileRead $0 $thisVersion
     FileClose $0
 
-    StrCpy $logstring "git version results: $thisVersion"
+    StrCpy $logstring "$downloadName version results: $thisVersion"
     Call logMessage
   
     ; Extract the version number from the output
-    ; The output will be in a form such as "git version x.y.z.windows.n", where we only want x.y.z (major.minor.patch)
-    ${StrLoc} $R0 $thisVersion "git version" ">" ; Find "git version" in the output - > is start of line
-    IntOp $R0 $R0 + 11 ; Move the pointer to version number, 11 spaces beyond the "git version"
+        
+    ${If} $downloadName == "git"
+      ; git:
+      ; The output will be in a form such as "git version x.y.z.windows.n", where we only want x.y.z (major.minor.patch)
+      ${StrLoc} $R0 $thisVersion "git version" ">" ; Find "<app> version" in the output - > is start of line
+      IntOp $R0 $R0 + 11 ; Move the pointer to version number, 11 spaces beyond the "git version"
+    ${Else}
+      ; Python:
+      ; The output will be in a form such as "Python x.y.z", where we only want x.y.z (major.minor.patch)
+      ${StrLoc} $R0 $thisVersion "Python" ">" ; Find string in the output - > is start of line
+      ;StrCpy $logstring "Python Version: $R0"
+      ;Call logMessage
+      IntOp $R0 $R0 + 7 ; Move the pointer to version number, starting 7 spaces beyond the "Python "
+    ${EndIf}
+    
     StrCpy $thisVersion $thisVersion "" $R0 ; Extract the version number and beyond
-    ;StrCpy $logstring "thisVersion: $thisVersion"
-    ;Call logMessage
+    StrCpy $logstring "thisVersion: $thisVersion"
+    Call logMessage
 
     IntOp $versionOffset 0 - 0  ; start at 0
     ; Keep only the portion of the version thru the third period
@@ -1495,28 +1553,28 @@ Function checkGitVersion
     ${EndIf}
     IntOp $versionOffset $versionOffset + $R0  ; total offset
     StrCpy $thisVersion $thisVersion $versionOffset 0 ; Extract just the version number
-    ;StrCpy $logstring "extracted version number: $thisVersion"
-    ;Call logMessage
+    StrCpy $logstring "extracted version number: $thisVersion"
+    Call logMessage
 
     ; Prepare the version number for comparison by replacing any bad characters
     ${VersionConvert} $thisVersion "" $thisVersion
-    ; Result expected in $R0: 0-Versions are equal; 1-thisVersion is newer; 2-gitversion is newer
-    ${VersionCompare} $thisVersion $gitversion $R0
+    ; Result expected in $R0: 0-Versions are equal; 1-thisVersion is newer; 2-desiredVersion is newer
+    ${VersionCompare} $thisVersion $desiredVersion $R0
     StrCpy $logstring "VersionCompare result code: $R0"
     Call logMessage
 
     ${If} $R0 == "2"
-    StrCpy $logstring "Git version found: $thisVersion is less than desired $gitversion"
+    StrCpy $logstring "$downloadName version found: $thisVersion is less than desired $desiredVersion"
       Call logMessage
       StrCpy $exitCode "1" ; will require reinstall    
     ${Else}
-      StrCpy $logstring "Git version found: $thisVersion is newer or equal to desired $gitversion"
+      StrCpy $logstring "$downloadName version found: $thisVersion is newer or equal to desired $desiredVersion"
       Call logMessage
       StrCpy $exitCode "0" ; will not require reinstall  
     ${EndIf}
 
   ${Else}
-      StrCpy $logstring "Git is not installed."
+      StrCpy $logstring "$downloadName is not installed."
       Call logMessage
       StrCpy $exitCode "1" ; will require install
   ${EndIf}
@@ -1615,12 +1673,13 @@ FunctionEnd
 ;                to pull the path from the environment variable
 Function getPythonPath
 
-StrCpy $logstring "Running python --version to see if git can be found."
+StrCpy $logstring "Running python --version to see if it is reachable."
 Call logMessage
 
-ExecWait 'cmd /C python --version >temp.txt' $0
+ExecWait 'cmd /C python --version >python_version.txt' $0
 StrCpy $logstring "Python --version return code: $0"
 Call logMessage
+;To force the logic below for testing: IntOp $0 1 - 0
 ${If} $0 != 0
 
   ; If Python was just installed, it will not be in the current environment yet, so 
@@ -1631,51 +1690,162 @@ ${If} $0 != 0
   StrCpy $logstring "Python not found. Trying to find the path using windows shell..."  
   Call logMessage
   
-  FileOpen $R9 "getpythonpath.cmd" w
-  FileWrite $R9 "@echo off${NEWLINE}"
-  FileWrite $R9 "call :skiptorun 1>pythonpath.txt${NEWLINE}"
-  FileWrite $R9 "exit /B${NEWLINE}"
-  FileWrite $R9 ":skiptorun${NEWLINE}"
-  FileWrite $R9 "where python${NEWLINE}"
-  FileClose $R9
+  StrCpy $cmdFile "getpythonpath.cmd"
+  StrCpy $pathFile "pythonpath.txt"
   
-  FileOpen $R9 "runpythonpath.cmd" w
+  FileOpen $R9 $cmdFile w
   FileWrite $R9 "@echo off${NEWLINE}"
-  FileWrite $R9 "runas /trustlevel:0x20000 getpythonpath.cmd${NEWLINE}"
+  FileWrite $R9 "setlocal enabledelayedexpansion${NEWLINE}"
+
+  FileWrite $R9 "REM Use PowerShell to retrieve the full PATH from the registry and set it in the current session${NEWLINE}"
+  FileWrite $R9 "for /f $\"delims=$\" %%A in ('powershell -command $\"Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' -Name Path | Select-Object -ExpandProperty Path$\"') do (${NEWLINE}"
+  FileWrite $R9 "    set $\"SystemPath=%%A$\"${NEWLINE}"
+  FileWrite $R9 ")${NEWLINE}"
+
+  FileWrite $R9 "for /f $\"delims=$\" %%B in ('powershell -command $\"Get-ItemProperty -Path 'HKCU:\Environment' -Name Path | Select-Object -ExpandProperty Path$\"') do (${NEWLINE}"
+  FileWrite $R9 "    set $\"UserPath=%%B$\"${NEWLINE}"
+  FileWrite $R9 ")${NEWLINE}"
+  FileWrite $R9 "REM Output the full PATH value for verification${NEWLINE}"
+  FileWrite $R9 "echo Full System PATH: %SystemPath%\%UserPath%${NEWLINE}"
+  FileWrite $R9 "REM Update the current session's PATH with both system and user paths to find python${NEWLINE}"
+  FileWrite $R9 "Call set PATH=%SystemPath%;%UserPath%${NEWLINE}"
+  FileWrite $R9 "where python 1>$\"$OUTDIR\$pathFile$\"${NEWLINE}"
+  FileWrite $R9 "echo >NUL${NEWLINE}"   ; Force closed filehandle so we can read it quickly
+  FileWrite $R9 "endlocal${NEWLINE}"
   FileWrite $R9 "exit /B${NEWLINE}"
+
   FileClose $R9 
 
   ClearErrors
-  ExecShellWait "" "runpythonpath.cmd" SW_HIDE
-  ifErrors 0 noErrors
-  StrCpy $logstring "Error getting python path"
-  Call logMessage  
+
+  ; Get path to windows command line exe
+  ReadEnvStr $R0 COMSPEC
+  StrCpy $logstring 'powershell -WindowStyle hidden Start-Process -FilePath "$R0"-ArgumentList /C,"$OUTDIR\$cmdFile"'
+  Call logMessage 
+
+  ; Set timeout to give the powershell command time to complete before attempting to read the path file (in milliseconds)
+  nsExec::ExecToStack /TIMEOUT=3000 'powershell -WindowStyle hidden Start-Process -FilePath "$R0" -ArgumentList /C,"$OUTDIR\$cmdFile"'
+  Pop $0 ;return value is first on stack
   
-noErrors:
+  ${If} $0 != 0
+    Pop $1 ;get error message
+    StrCpy $logstring "Powershell results: $0 $1"
+    Call logMessage
+  
+  ${Else}
+    ${For} $R1 1 5
+      ; Open the path file.  If it fails, wait a few seconds and retry a few times before aborting.
+      ClearErrors
+      FileOpen $R9 "$OUTDIR\$pathFile" r
+      ifErrors sleepLoop3
 
-  ; Read the error log file content into a variable
-  FileOpen $R9 "pythonpath.txt" r
-  FileRead $R9 $R7
-  FileClose $R9
+      StrCpy $logstring "Reading $pathFile..."
+      Call logMessage
+      ${Break}
 
-  StrCpy $pythonPath $R7
-  ${StrTrimNewLines} $pythonPath $pythonPath
-  StrCpy $logstring "python path: $pythonPath"
-  Call logMessage
+      sleepLoop3:
+      StrCpy $logstring "Error opening $pathFile.  Waiting 2 seconds and retrying, to make sure windows closed it..."
+      Call logMessage      
+      Sleep 2000  ; Wait for 2 seconds to ensure the file is written    
+    ${Next}
 
-  StrCpy $pythonExe "$pythonPath"
+    ifErrors 0 pythonFileOK
+      ;StrCpy $logstring "Unable to read $pathFile. Terminating installer."
+      StrCpy $logstring "Unable to read $pathFile. Try py instead..."
+      Call logMessage
+      goto tryPy      
+      ; MessageBox MB_OK|MB_ICONEXCLAMATION $logstring /SD IDOK
+      ; Abort
+
+    pythonFileOK:
+      ; Read the first line of the path file created by the script
+      FileRead $R9 $R7
+      FileClose $R9
+      
+      ${StrTrimNewLines} $pythonPath $R7
+      ${If} $pythonPath == ""
+        StrCpy $logstring "pythonPath is empty, waiting 2 seconds and trying again..."
+        Call logMessage
+        ${For} $R1 1 5          
+          Sleep 2000  ; Wait for 2 seconds
+          ; Open the path file.  If it fails, wait a few seconds and retry a few times before aborting.
+          ClearErrors
+          FileOpen $R9 "$OUTDIR\$pathFile" r
+          ifErrors sleepLoop4
+
+          StrCpy $logstring "Reading $pathFile..."
+          Call logMessage
+          FileRead $R9 $R7
+          FileClose $R9
+          
+          ${StrTrimNewLines} $pythonPath $R7
+          ${If} $pythonPath == "" 
+            StrCpy $logstring "pythonPath is empty, waiting 2 seconds and retrying..."
+            Call logMessage
+            goto nextLoopGit
+          ${EndIf}
+
+          sleepLoop4:
+          StrCpy $logstring "Error opening $pathFile.  Waiting 2 seconds and retrying..."
+          Call logMessage     
+
+          nextLoopGit:
+        ${Next}
+
+        ifErrors 0 pythonFileOK2
+          ;StrCpy $logstring "Unable to read $pathFile. Terminating installer."
+          StrCpy $logstring "Unable to read $pathFile. Try py instead..."
+          Call logMessage
+          goto tryPy
+          ; MessageBox MB_OK|MB_ICONEXCLAMATION $logstring /SD IDOK
+          ; Abort
+        pythonFileOK2:
+        ${If} $pythonPath == "" 
+            ;StrCpy $logstring "pythonPath is empty.  Unable to continue with installation."
+            StrCpy $logstring "pythonPath is empty.  Try py instead..."
+            Call logMessage
+            goto tryPy
+            ;MessageBox MB_OK|MB_ICONEXCLAMATION $logstring /SD IDOK
+            ;Abort
+        ${EndIf}
+
+      ${EndIf}
+
+      StrCpy $logstring "python path: $pythonPath"
+      Call logMessage
+
+      StrCpy $pythonExe "$pythonPath"
+    
+  ${EndIf}
+
 ${Else}
   ; if it can be found directly, no need to use whole path
   StrCpy $pythonExe "python"
 ${EndIf}
+goto skipPy
 
-Delete "getpythonpath.cmd"
-Delete "runpythonpath.cmd"
-Delete "pythonpath.txt"
-Delete "temp.txt"
-StrCpy $logstring "Python Path: $pythonExe"
+tryPy:
+ExecWait 'cmd /C py --version >python_version.txt' $0
+StrCpy $logstring "Py launcher --version return code: $0"
 Call logMessage
- 
+;To force the logic below for testing: IntOp $0 1 - 0
+${If} $0 != 0
+  StrCpy $logstring "Unable to locate py launcher either. Installation will end.  Try re-running installer."
+  Call logMessage
+  MessageBox MB_OK|MB_ICONEXCLAMATION $logstring /SD IDOK
+  Abort
+${Else}
+  ; use py instead of python
+  StrCpy $pythonExe "py"
+  StrCpy $logstring "Using py launcher instead of python for starting azt."
+  Call logMessage
+${EndIf}
+
+skipPy:
+;Delete $cmdFile
+;Delete $pathFile
+StrCpy $logstring "Python Path: $pythonExe"
+Call logMessage 
 FunctionEnd
 
 ;-----------------------------------------------------------------
@@ -1684,12 +1854,13 @@ FunctionEnd
 ;             to pull the path from the environment variable
 Function getGitPath
 
-StrCpy $logstring "Running git --version to see if git can be found."
+StrCpy $logstring "Running git --version to see if it is reachable."
 Call logMessage
 
-ExecWait 'cmd /C git --version >temp.txt' $0
+ExecWait 'cmd /C git --version >git_version.txt' $0
 StrCpy $logstring "Git --version return code: $exitCode"
 Call logMessage
+;To force the logic below for testing: IntOp $0 1 - 0
 ${If} $0 != 0
 
   ; If git was just installed, it will not be in the current environment yet, so 
@@ -1699,50 +1870,136 @@ ${If} $0 != 0
 
   StrCpy $logstring "git not found. Trying to find the path using windows shell..."
   Call logMessage
+
+  StrCpy $cmdFile "getgitpath.cmd"
+  StrCpy $pathFile "gitpath.txt"
   
-  FileOpen $R9 "getgitpath.cmd" w
+  FileOpen $R9 $cmdFile w
   FileWrite $R9 "@echo off${NEWLINE}"
-  FileWrite $R9 "call :skiptorun 1>gitpath.txt${NEWLINE}"
+  FileWrite $R9 "setlocal enabledelayedexpansion${NEWLINE}"
+
+  FileWrite $R9 "REM Use PowerShell to retrieve the full PATH from the registry and set it in the current session${NEWLINE}"
+  FileWrite $R9 "for /f $\"delims=$\" %%A in ('powershell -command $\"Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' -Name Path | Select-Object -ExpandProperty Path$\"') do (${NEWLINE}"
+  FileWrite $R9 "    set $\"SystemPath=%%A$\"${NEWLINE}"
+  FileWrite $R9 ")${NEWLINE}"
+
+  FileWrite $R9 "for /f $\"delims=$\" %%B in ('powershell -command $\"Get-ItemProperty -Path 'HKCU:\Environment' -Name Path | Select-Object -ExpandProperty Path$\"') do (${NEWLINE}"
+  FileWrite $R9 "    set $\"UserPath=%%B$\"${NEWLINE}"
+  FileWrite $R9 ")${NEWLINE}"
+  FileWrite $R9 "REM Output the full PATH value for verification${NEWLINE}"
+  FileWrite $R9 "echo Full System PATH: %SystemPath%\%UserPath%${NEWLINE}"
+  FileWrite $R9 "REM Update the current session's PATH with both system and user paths to find Git${NEWLINE}"
+  FileWrite $R9 "Call set PATH=%SystemPath%;%UserPath%${NEWLINE}"
+  FileWrite $R9 "where git 1>$\"$OUTDIR\$pathFile$\"${NEWLINE}"
+  FileWrite $R9 "echo >NUL${NEWLINE}"   ; Force closed filehandle so we can read it quickly
+  FileWrite $R9 "endlocal${NEWLINE}"
   FileWrite $R9 "exit /B${NEWLINE}"
-  FileWrite $R9 ":skiptorun${NEWLINE}"
-  FileWrite $R9 "where git${NEWLINE}"
-  FileClose $R9 
-  
-  FileOpen $R9 "rungitpath.cmd" w
-  FileWrite $R9 "@echo off${NEWLINE}"
-  FileWrite $R9 "runas /trustlevel:0x20000 getgitpath.cmd${NEWLINE}"
-  FileWrite $R9 "exit /B${NEWLINE}"
+
   FileClose $R9 
 
   ClearErrors
-  ExecShellWait "" "rungitpath.cmd" SW_HIDE
-  ifErrors 0 noErrors
-  StrCpy $logstring "Error getting git path"
-  Call logMessage
-   
-noErrors:
+
+  ; Get path to windows command line exe
+  ReadEnvStr $R0 COMSPEC
+  StrCpy $logstring 'powershell -WindowStyle hidden Start-Process -FilePath "$R0"-ArgumentList /C,"$OUTDIR\$cmdFile"'
+  Call logMessage 
+
+  ; Set timeout to give the powershell command time to complete before attempting to read the path file (in milliseconds)
+  nsExec::ExecToStack /TIMEOUT=3000 'powershell -WindowStyle hidden Start-Process -FilePath "$R0" -ArgumentList /C,"$OUTDIR\$cmdFile"'
+  Pop $0 ;return value is first on stack
+  ${If} $0 != 0
+    Pop $1 ;get error message
+    StrCpy $logstring "Powershell results: $0 $1"
+    Call logMessage
   
-  ; Read the error log file content into a variable
-  FileOpen $R9 "gitpath.txt" r
-  FileRead $R9 $R7
-  FileClose $R9
+  ${Else}
+          
+    ${For} $R1 1 5
+      ; Open the path file.  If it fails, wait a few seconds and retry a few times before aborting.
+      ClearErrors
+      FileOpen $R9 "$OUTDIR\$pathFile" r
+      ifErrors sleepLoop3
 
-  StrCpy $gitPath $R7
-  ${StrTrimNewLines} $gitPath $gitPath
-  StrCpy $logstring "git path: $gitPath"
-  Call logMessage
+      StrCpy $logstring "Reading $pathFile..."
+      Call logMessage
+      ${Break}
 
-  StrCpy $gitExe "$gitPath"
+      sleepLoop3:
+      StrCpy $logstring "Error opening $pathFile.  Waiting 2 seconds and retrying, to make sure windows closed it..."
+      Call logMessage      
+      Sleep 2000  ; Wait for 2 seconds to ensure the file is written    
+    ${Next}
+
+    ifErrors 0 gitFileOK
+      StrCpy $logstring "Unable to read $pathFile. Terminating installer."
+      Call logMessage
+      MessageBox MB_OK|MB_ICONEXCLAMATION $logstring /SD IDOK
+      Abort
+
+    gitFileOK:
+      ; Read the first line of the path file created by the script
+      FileRead $R9 $R7
+      FileClose $R9
+      
+      ${StrTrimNewLines} $gitPath $R7
+      ${If} $gitPath == ""
+        StrCpy $logstring "gitPath is empty, waiting 2 seconds and trying again..."
+        Call logMessage
+        ${For} $R1 1 5          
+          Sleep 2000  ; Wait for 2 seconds
+          ; Open the path file.  If it fails, wait a few seconds and retry a few times before aborting.
+          ClearErrors
+          FileOpen $R9 "$OUTDIR\$pathFile" r
+          ifErrors sleepLoop4
+
+          StrCpy $logstring "Reading $pathFile..."
+          Call logMessage
+          FileRead $R9 $R7
+          FileClose $R9
+          
+          ${StrTrimNewLines} $gitPath $R7
+          ${If} $gitPath == "" 
+            StrCpy $logstring "gitPath is empty, waiting 2 seconds and retrying..."
+            Call logMessage
+            goto nextLoopGit
+          ${EndIf}
+
+          sleepLoop4:
+          StrCpy $logstring "Error opening $pathFile.  Waiting 2 seconds and retrying..."
+          Call logMessage     
+
+          nextLoopGit:
+        ${Next}
+
+        ifErrors 0 gitFileOK2
+          StrCpy $logstring "Unable to read $pathFile. Terminating installer."
+          Call logMessage
+          MessageBox MB_OK|MB_ICONEXCLAMATION $logstring /SD IDOK
+          Abort
+
+        gitFileOK2:
+        ${If} $gitPath == "" 
+            StrCpy $logstring "gitPath is empty.  Unable to continue with installation."
+            Call logMessage
+            Abort
+        ${EndIf}
+
+      ${EndIf}
+
+      StrCpy $logstring "git path: $gitPath"
+      Call logMessage
+
+      StrCpy $gitExe "$gitPath"
+    
+  ${EndIf}
 
 ${Else}
   ; if it can be found directly, no need to use whole path
   StrCpy $gitExe "git"
 ${EndIf}
 
-Delete "getgitpath.cmd"
-Delete "rungitpath.cmd"
-Delete "gitpath.txt"
-Delete "temp.txt"
+;Delete $cmdFile
+;Delete $pathFile
 StrCpy $logstring "Git Path: $gitExe"
 Call logMessage 
 
