@@ -64,6 +64,9 @@ The following are not part of the NSIS base installation.  Zip files provided sh
 
 - [EnVar](https://nsis.sourceforge.io/EnVar_plug-in)
 - [Inetc](https://nsis.sourceforge.io/Inetc_plug-in)
+- [Locate](https://nsis.sourceforge.io/Locate_plugin)  
+    - To install Locate, run install.exe but must also copy locate.dll from Plugins to each of the subdirectories otherwise vscode doesn't find it
+    - Locate documenttation will be installed in C:\Program Files (x86)\NSIS\Docs\Locate\Readme.txt    
 
 
 ### Important
@@ -78,7 +81,7 @@ The following are not part of the NSIS base installation.  Zip files provided sh
 
 - If installation of any of the optional components fails, the installer will continue attempting to install remaining components.
 
-- If Python and/or Git are installed for the first time, the installer will not find them in the subsequent commands.  So we run a windows batch file from a second shell to get the updated path into an output file and then read the path in for use in the remainder of the script.   
+- If Python and/or Git are installed for the first time, the installer will not find them in the subsequent commands.  So we run a windows batch file from a second shell to get the updated path into an output file and then read the path from there for use in the remainder of the script.   Last resort will be to use the py launcher if that is found but the python path is not.
 
 ## References
 

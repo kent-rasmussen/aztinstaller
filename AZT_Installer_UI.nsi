@@ -6,6 +6,7 @@
   !include FileFunc.nsh
   !include StrFunc.nsh    
   !include WinMessages.nsh  ; For SendMessage
+  !include Locate.nsh
 
 ; Used to reposition the installer window
   !ifndef SPI_GETWORKAREA
@@ -19,10 +20,8 @@
   ${StrStr} 
   ${StrRep}
   ${StrLoc}
-  ${StrTrimNewLines}
+  ${StrTrimNewLines}  
 
-; Macro and Function for ${Locate} to find folders from FileFunc
-  !insertmacro Locate
 
 ; Show all the DetailsPrint to the user while installation is in progress
   ShowInstDetails show
@@ -34,6 +33,8 @@
   !define TITLENAME "A-Z+T Installer"
   !define APPNAME "A-Z+T"
   !define INSTALLERNAME "AZT_Installer"  ; original name
+
+  !define WAITTIME 5000  ; Milliseconds to wait for system calls and retries
 
 ;--------------------------------
 ; Global variables    (Ref: See "Function .onInit" for initialization of values)
@@ -73,6 +74,8 @@
   Var /GLOBAL filename
 
   var /GLOBAL azt
+  var /GLOBAL aztRepoName
+  var /GLOBAL aztRepoURL
   var /GLOBAL aztfilename
   var /GLOBAL transcriberfilename
 
@@ -166,28 +169,142 @@
 
 ;***************************************************************************************
 Section "Python" pythonId
-  ;goto pythonEnd
+  
   ;----------------------------------------------------------------
   !insertmacro MUI_HEADER_TEXT_PAGE "${TITLENAME}"  "Installing Python..."
   StrCpy $logstring "${NEWLINE}-----  Python Installer ----- "
   Call logMessage
 
   StrCpy $downloadName "python"
+  Var /GLOBAL tempString
 
-  ; Check if desired or later Git is already installed
+  ; Check if desired or later version is already installed
   StrCpy $desiredVersion $pythonVersion
   Call checkVersion  
-  Pop $0
+  Pop $0 ; get exit code
   ${If} $0 == "0"
-    Pop $1
-    StrCpy $logstring "$downloadName is already installed, version is <$1>, skipping installation."
+    Pop $1 ; get version
+    StrCpy $tempString $1
+    StrCpy $logstring "$downloadName is already installed, version is <$tempString>, skipping installation."
     Call logMessage
     goto pythonEnd
-  ${EndIf}  
+  ${EndIf}
 
+  ; If there is an older version, remove it from the path before installing the new one
+  ; This should prevent the first run of azt from picking up the wrong version
+  ${If} $0 == "2"
+    Pop $1 ; get version
+    StrCpy $tempString $1
+    StrCpy $logstring "$downloadName version <$tempString> found.  Removing from path..."
+    Call logMessage
+
+    call getPythonPath
+    StrCpy $logstring "getPythonPath returned pythonExe:  $pythonExe"
+    Call logMessage
+
+    ; if only the name was set, it must be in the path so use "where" to get the real path
+    ${If} $pythonExe == "python"    
+      StrCpy $pathFile "pythonpath.txt"
+      Delete $pathFile
+      ClearErrors
+      ExecWait 'cmd /C where python >$pathFile' $0
+      StrCpy $logstring "'where python' RC = $0"
+      Call logMessage        
+      ${If} $0 == 0
+        ; Read the path from the path file
+        FileOpen $0 $pathFile r
+        FileRead $0 $tempString
+        FileClose $0
+        ${StrTrimNewLines} $pythonExe $tempString
+        StrCpy $logstring "Python path from path file:  $pythonExe"
+        Call logMessage
+      ${EndIf}
+    ${EndIf}
+
+    ${If} $pythonExe != ""
+    ${If} $pythonExe != "py"
+    ${If} $pythonExe != "python"
+        StrCpy $logstring "Old python path found: $pythonExe"
+        Call logMessage
+
+        ; Get the path portion by stripping off the exe file name.  
+        ; It will be used to remove from registry environment path
+        StrLen $R1 $pythonExe ; Get the length of the string
+        StrCpy $R0 -1 ; Initialize the position variable to -1 (not found)        
+        ; Loop through the string from the end to the beginning        
+        ${ForEach} $R3 $R1 0 - 1
+            StrCpy $R4 $pythonExe 1 $R3 ; Get the character at position $R3
+            ;StrCpy $logstring "R4: $R4"
+            ;Call logMessage
+            StrCmp $R4 "\" 0 +3
+            StrCpy $R0 $R3 ; Update the position if backslash is found
+            ${Break}
+        ${Next}
+
+        StrCpy $logstring "Offset: $R0"
+        Call logMessage
+        Var /GLOBAL oldPath
+        StrCpy $oldPath $pythonExe $R0
+        StrCpy $logstring "Old Python path: $oldPath"
+        Call logMessage
+
+        ; Remove the old python path from the system path
+        ; For info on Envar plugin, see https://nsis.sourceforge.io/EnVar_plug-in
+        EnVar::SetHKLM
+        ; Check for path set in HKLM (Local Machine)
+        EnVar::Check "Path" "NULL"
+        Pop $0
+        StrCpy $logstring "EnVar::Read Registry 'Path' RC = $0"
+        Call logMessage
+        ${If} $0 == 0
+          ; Remove from path (with and without terminating backslash)
+          EnVar::DeleteValue "Path" "$oldPath"
+          Pop $0
+          StrCpy $logstring "Registry attempt to remove '$oldPath' from HKLM Path Environment variable.  RC = $0"
+          Call logMessage
+          EnVar::DeleteValue "Path" "$oldPath\"
+          Pop $0
+          StrCpy $logstring "Registry attempt to remove '$oldPath\' from HKLM Path Environment variable.  RC = $0"
+          Call logMessage
+        ${Else}
+          StrCpy $logstring "Unable to update registry HKLM to remove $oldPath."
+          Call logMessage
+        ${EndIf}
+
+        ; Remove the old python path from the current user's path
+        EnVar::SetHKCU
+        ; Check for path set in HKCU (Current User)        
+        EnVar::Check "Path" "NULL"
+        Pop $0
+        StrCpy $logstring "EnVar::Read Registry 'Path' RC = $0"
+        Call logMessage
+        ${If} $0 == 0
+          ; Remove from path (with and without terminating backslash)
+          EnVar::DeleteValue "Path" "$oldPath"
+          Pop $0
+          StrCpy $logstring "Registry attempt to remove '$oldPath' from HKCU Path Environment variable.  RC = $0"
+          Call logMessage
+          EnVar::DeleteValue "Path" "$oldPath\"
+          Pop $0
+          StrCpy $logstring "Registry attempt to remove '$oldPath\' from HKCU Path Environment variable.  RC = $0"
+          Call logMessage
+        ${Else}
+          StrCpy $logstring "Unable to update registry HKCU to remove $oldPath."
+          Call logMessage
+        ${EndIf}      
+    ${EndIf} 
+    ${EndIf}
+    ${EndIf}
+  ${EndIf}
+
+  ;---------------------------------------------------------------
+  ; Install Python
+  ;---------------------------------------------------------------  
   ; Check if Python Installer file was already downloaded previously
+  StrCpy $logstring "----- Must install python -----"
+  Call logMessage
   FindFirst $0 $1 "$pythonfilename"
-  StrCpy $logstring "$downloadName file search: $0 $1"
+  StrCpy $logstring "$downloadName file search results: $0 $1"
   Call logMessage
   FindClose $0
 
@@ -202,6 +319,7 @@ Section "Python" pythonId
     StrCpy $logstring "Downloading Python from $pythonurl"
     Call logMessage
 
+    ; For inetc plugin ref: https://nsis.sourceforge.io/Inetc_plug-in
     inetc::get "$pythonurl" "$pythonfilename" /end
     Pop $0 ;Get the return value
     ${If} $0 != 'OK'
@@ -314,6 +432,10 @@ ${EndIf}
 
 ;--------------------------------
 pythonEnd:
+  !insertmacro MUI_HEADER_TEXT_PAGE "${TITLENAME}"  "Locating Python..."
+  StrCpy $logstring "${NEWLINE}-----  Get Final Python Path ----- "
+  Call logMessage
+  
   call getPythonPath
   ${If} $pythonExe == ""
     StrCpy $logstring "Unable to find python.  You may need to run this installer again to complete the full installation."
@@ -424,14 +546,11 @@ Section "AZT" aztId
   !insertmacro MUI_HEADER_TEXT_PAGE "${TITLENAME}" "Installing AZT from Git repository..."
   StrCpy $logstring "${NEWLINE}-----  AZT Installer ----- "
   Call logMessage    
-  
-  ; Initialize variables and constants
-  !define REPO_NAME "azt.git"
-  !define REPO_URL "https://github.com/kent-rasmussen/azt.git"
+      
   StrCpy $azt ""
 
   ; Show a message that we're starting to look for the repo
-  StrCpy $logstring "Looking for a USB with the ${REPO_NAME} on it"
+  StrCpy $logstring "Looking for a USB with the $aztRepoName on it"
   Call logMessage
   
   Push "EndStack"  ; Mark end of stack to check on Pop
@@ -482,12 +601,12 @@ Section "AZT" aztId
         StrCpy $logstring "Drive: $3"
         call logMessage
 
-        StrCpy $R3 "$3\*${REPO_NAME}"
+        StrCpy $R3 "$3\*$aztRepoName"
         FindFirst $R4 $R5 "$R3"
         StrCpy $logstring "$R3 file search: $R4 $R5"
         Call logMessage
         FindClose $R4
-        ${If} $1 == ${REPO_NAME}
+        ${If} $1 == $aztRepoName
           StrCpy $logstring "found repo in $R3"          
           Call logMessage
           StrCpy $azt "$R3"
@@ -512,7 +631,7 @@ ${If} $azt != ""
   StrCpy $logstring "azt is defined (local repo found): $azt"
   Call logMessage
 ${Else}
-  StrCpy $azt ${REPO_URL}
+  StrCpy $azt $aztRepoURL
   StrCpy $logstring  "Local file not found; using github: $azt"
   Call logMessage
 ${EndIf}
@@ -812,7 +931,7 @@ continueCharis2:
   ${Loop}
 
   ; Notify windows about the font updates
-  SendMessage ${HWND_BROADCAST} ${WM_FONTCHANGE} 0 0 /TIMEOUT=5000
+  SendMessage ${HWND_BROADCAST} ${WM_FONTCHANGE} 0 0 /TIMEOUT=${WAITTIME}
   FindClose $0  
   goto charisEnd
 
@@ -835,23 +954,24 @@ Section "XLingPaper" xlpId
 
   StrCpy $logstring "Checking if XLingPaper is already installed..."
   Call logMessage
-  ; Check if XLingPaper is already installed to skip the installation
-  ; Variables to hold search results
-  StrCpy $R0 "XLingPaper"
-
-  StrCpy $R1 ""  ; This will hold the result
-  ; Program Files (x86)
-  StrCpy $R2 $PROGRAMFILES32
-  ${Locate} "$R2" "/G=0 /M=$R0" "FindHandlerCallBack"  
+  ; Check if XLingPaper is already installed to skip the installation  
+  StrCpy $R0 "XLingPaper"  
+  StrCpy $R2 $PROGRAMFILES32  ; Program Files (x86)
+  Push $R2
+  Push $R0
+  Call LocatePrograms
+  Pop $R1
   ${If} $R1 != ""
     StrCpy $logstring "$R0 found: $R1.  Skipping installation."
     Call logMessage
     Goto xlpEnd
   ${Else}    
-    StrCpy $R1 ""  ; reset for results
-    StrCpy $R2 $PROGRAMFILES64
-    ; Program Files (64-bit)
-    ${Locate} "$R2" "/G=0 /M=$R0" "FindHandlerCallBack"
+    StrCpy $R0 "XLingPaper"
+    StrCpy $R2 $PROGRAMFILES64   ; Program Files (64-bit)    
+    Push $R2
+    Push $R0
+    Call LocatePrograms
+    Pop $R1
     ${If} $R1 != ""
       StrCpy $logstring "$R0 found: $R1.  Skipping installation."
       Call logMessage
@@ -930,22 +1050,23 @@ Section "Praat" praatId
   StrCpy $logstring "Checking if Praat is already installed..."
   Call logMessage
   ; Check if Praat is already installed to skip the installation
-  ; Variables to hold search results
   StrCpy $R0 "Praat.exe"
-
-  StrCpy $R1 ""  ; This will hold the result
-  ; Program Files (x86)
-  StrCpy $R2 $PROGRAMFILES32
-  ${Locate} "$R2" "/G=0 /M=$R0" "FindHandlerCallBack"
+  StrCpy $R2 $PROGRAMFILES32  ; Program Files (x86)
+  Push $R2
+  Push $R0
+  Call LocatePrograms
+  Pop $R1
   ${If} $R1 != ""
     StrCpy $logstring "$R0 found: $R1.  Skipping installation."
     Call logMessage
     Goto praatEnd
   ${Else}    
-    StrCpy $R1 ""  ; reset for results
-    StrCpy $R2 $PROGRAMFILES64
-    ; Program Files (64-bit)
-    ${Locate} "$R2" "/G=0 /M=$R0" "FindHandlerCallBack"
+    StrCpy $R0 "Praat.exe"
+    StrCpy $R2 $PROGRAMFILES64   ; Program Files (64-bit)    
+    Push $R2
+    Push $R0
+    Call LocatePrograms
+    Pop $R1
     ${If} $R1 != ""
       StrCpy $logstring "$R0 found: $R1.  Skipping installation."
       Call logMessage
@@ -1055,20 +1176,22 @@ Section "Mercurial"  mercurialId
   ; Check if Mercurial is already installed to skip the installation
   ; Variables to hold search results
   StrCpy $R0 "Mercurial"
-  
-  StrCpy $R1 ""  ; This will hold the result
-  ; Program Files (x86)
-  StrCpy $R2 $PROGRAMFILES32
-  ${Locate} "$R2" "/G=0 /M=$R0" "FindHandlerCallBack"
+  StrCpy $R2 $PROGRAMFILES32  ; Program Files (x86)
+  Push $R2
+  Push $R0
+  Call LocatePrograms
+  Pop $R1
   ${If} $R1 != ""
     StrCpy $logstring "$R0 found: $R1.  Skipping installation."
     Call logMessage
     Goto mercurialEnd
   ${Else}    
-    StrCpy $R1 ""  ; reset for results
-    StrCpy $R2 $PROGRAMFILES64
-    ; Program Files (64-bit)
-    ${Locate} "$R2" "/G=0 /M=$R0" "FindHandlerCallBack"
+    StrCpy $R0 "Mercurial"
+    StrCpy $R2 $PROGRAMFILES64   ; Program Files (64-bit)    
+    Push $R2
+    Push $R0
+    Call LocatePrograms
+    Pop $R1
     ${If} $R1 != ""
       StrCpy $logstring "$R0 found: $R1.  Skipping installation."
       Call logMessage
@@ -1206,129 +1329,6 @@ Function positionInstWindow
 FunctionEnd
 
 ;-----------------------------------------------------------------
-; .onInit is executed automatically when the installer is started
-;     Use it to initialize features and variables
-Function .onInit
-
-  # Define paths  
-
-  StrCpy $pythonversion "3.12.4"
-  StrCpy $pythonfilename "python-$pythonversion-amd64.exe"
-  StrCpy $pythonsize "^(25.5322 Megabyte^(s^); 26772456 bytes^)"
-  StrCpy $pythonurl "https://www.python.org/ftp/python/3.12.4/$pythonfilename"
-
-  StrCpy $gitversion "2.45.2"
-  StrCpy $gitfilename "Git-$gitversion-64-bit.exe"
-  StrCpy $gitsize "^(68.1 MB; 68,131,584 bytes^)"
-  StrCpy $giturl "https://github.com/git-for-windows/git/releases/download/v2.45.2.windows.1/$gitfilename"
-
-  StrCpy $aztfilename "$INSTDIR\main.py"
-  StrCpy $transcriberfilename "$INSTDIR\transcriber.py"   
-
-  StrCpy $praatversion "6413"
-  StrCpy $praatfilename "praat$praatversion_win-intel64.zip"
-  StrCpy $praaturl "https://www.fon.hum.uva.nl/praat/$praatfilename"
-
-  StrCpy $xlpversion "3-10"
-  StrCpy $xlpfilename "XLingPaper$xlpversion-1XXEPersonalEditionFullSetup.exe"
-  StrCpy $xlpurl "https://software.sil.org/downloads/r/xlingpaper/$xlpfilename"
-
-  StrCpy $hgversion "6.0"
-  StrCpy $hgfilename "Mercurial-$hgversion-x64.exe"
-  StrCpy $hgurl "https://www.mercurial-scm.org/release/windows/$hgfilename"
-
-  StrCpy $charisversion "6.200"
-  StrCpy $charisfilename "CharisSIL-$charisversion"
-  StrCpy $chariszipfile "CharisSIL-$charisversion.zip"
-  StrCpy $charisurl "https://software.sil.org/downloads/r/charis/$chariszipfile"
-
-  StrCpy $filepath $EXEDIR  
-  ; Destination directory for temporary installation files (OUTDIR)
-  SetOutPath $filepath
-
-  ; Include icons for setting in shortcuts - must come after SetOutPath is defined
-  File "azt.ico"
-  File "Transcribe-Tone.ico"
-    
-  ClearErrors
-  StrCpy $logfile "${INSTALLERNAME}.log"
-  FileOpen $log0 $logfile w
-
-  SetDetailsPrint both
-
-  StrCpy $filename $EXEFILE
-  StrCpy $logstring  "Installer is $filepath\$filename"  
-  Call logMessage 
-
-  StrCpy $0 $DESKTOP
-  StrCpy $logstring "DESKTOP is $DESKTOP"
-  Call logMessage 
-
-  # set sections as selected and read-only
-  IntOp $0 ${SF_SELECTED} | ${SF_RO}  
-  SectionSetFlags ${pythonId} $0
-  SectionSetFlags ${gitId} $0
-  SectionSetFlags ${aztId} $0
-  SectionSetFlags ${charisId} $0
-
-  ; Check if the installer is running with admin rights
-  StrCpy $logstring "-----  Starting Installation ----- ${NEWLINE}Installing from $filepath"
-  Call logMessage
-  
-  !insertmacro MUI_HEADER_TEXT_PAGE "${TITLENAME}"  "Test / Set Admin Mode..."
-  StrCpy $logstring "${NEWLINE}-----  Test / Set Admin Mode ----- "
-  Call logMessage
-  UserInfo::GetAccountType
-  Pop $0
-  ${If} $0 == 'Admin'
-    StrCpy $logstring 'Installer running in admin mode'
-    ;MessageBox MB_OK $logstring
-    Call logMessage
-    StrCpy $withadmin "1"
-  ${Else}
-    ; StrCpy $logstring "Installer is not able to run with admin rights, installing for current user only: $0"
-    StrCpy $logstring "Installer must be run as Administrator."
-    Call logMessage
-    MessageBox MB_OK|MB_ICONEXCLAMATION $logstring /SD IDOK
-    StrCpy $withadmin "0"
-    Abort
-  ${EndIf}  
-
-FunctionEnd
-
-;-----------------------------------------------------------------
-; .onInstSuccess - Executes at the end of a successful installation 
-Function .onInstSuccess
-    StrCpy $logstring "Installation completed successfully.${NEWLINE}${NEWLINE}A-Z+T will be launched now to finish configuration."
-    Call logMessage    
-    MessageBox MB_OK $logstring
-    StrCpy $logstring  "Doing first run of A-Z+T, to make sure modules are installed..."
-    Call logMessage
-
-    ; File cleanup - close log and delete temp logs    
-    Delete "git_error.log"
-    Delete "charis_error.log"
-    Delete "praat_error.log"
-    
-    ClearErrors
-    StrCpy $logstring  "ExecShell open $pythonExe $aztfilename SW_SHOW"
-    Call logMessage
-    FileClose $log0
-    ExecShell "open" "$pythonExe" "$aztfilename" SW_SHOW
-FunctionEnd
-
-;-----------------------------------------------------------------
-;.onInstFailed - Executes at the end of an installation abort
-Function .onInstFailed
-  StrCpy $logstring  "${APPNAME} installation aborted."
-  Call logMessage
-  FileClose $log0
-  MessageBox MB_YESNO "${APPNAME} installation aborted.  View log file?" IDNO NoReadme
-      Exec "notepad.exe $logfile"
-  NoReadme:
-FunctionEnd
-
-;-----------------------------------------------------------------
 ; logMessage: Function expects the file to be open for write at handle $log0
 ; Parms:       $logstring contains the string to write to the file
 ;              $log0 contains the output log handle, opened in .onInit 
@@ -1339,18 +1339,50 @@ Function logMessage
 FunctionEnd
 
 ;-----------------------------------------------------------------
-; FindHandlerCallBack: Function call required by ${Locate} 
-; $R9    contains the full path of the located folder
-; $R8    "path"
-; $R7    "name"
-; $R6    "size"  ($R6="" if directory, $R6="0" if file with /S=)
-; Store the first found folder path in $R1  
-; $R0 contains the original search string
-; $R2 contains the target path being searched
-Function FindHandlerCallBack
-  StrCpy $R1 $R9
-  StrCpy $logstring "FindHandlerCallBack - $R0 Found at $R1"
+; LocatePrograms: Function to locate a searchstring in a given path
+; Used primarily to search for existence of programs in the progrm files directories
+; Inputs are expected on the stack:
+;   Search string should be the first thing in the stack - Pop $searchString
+;   Search path is the second item on the stack - Pop $searchPath
+; Output:   Result of search will be pushed to the stack, will be "" if not found
+Function LocatePrograms
+	
+  Var /GLOBAL searchString
+  Var /GLOBAL searchPath
+  Var /GLOBAL searchResult
+
+  StrCpy $searchResult ""
+
+  Pop $searchString
+  Pop $searchPath
+  StrCpy $logstring "LocatePrograms - searching for file $searchString in $searchPath"
+  Call logMessage 
+  
+  ; Define parameters for locate to search files, directories but not subdirectories
+  StrCpy $R3 `/F=1 /D=1 /G=0 /M=$searchString`  
+  ${locate::Open} $searchPath $R3 $0
+	StrCmp $0 -1 0 locate1
+	StrCpy $logstring "Error getting handle for locate for $searchString"
   Call logMessage
+  goto skiplocate
+
+	locate1:
+	${locate::Find} $0 $1 $2 $3 $4 $5 $6
+	StrCpy $logstring 'locate::Find results: path=$1   -    timestamp=$5'
+	Call logMessage
+
+	${locate::Close} $0
+	${locate::Unload}
+
+  ${If} $1 != ""
+    StrCpy $searchResult $1
+    StrCpy $logstring "$searchString found: $searchResult"
+    Call logMessage    
+  ${EndIf}
+
+skiplocate:
+  Push $searchResult
+
 FunctionEnd
 
 ;-----------------------------------------------------------------
@@ -1400,27 +1432,27 @@ Function writeLongPathsEnabled
   Call logMessage
   ; Cases 1 - 5 map to HKLM,HKCU,HKCR,HKU,HKCC (no easy way to do a for with strings)
   ${Switch} $R1
-        ${Case} 1
-          StrCpy $R2 HKLM
-          WriteRegDWORD HKLM "SYSTEM\CurrentControlSet\Control\FileSystem" "LongPathsEnabled" 1
-          ${Break}
-        ${Case} 2
-          StrCpy $R2 HKCU
-          WriteRegDWORD HKCU "SYSTEM\CurrentControlSet\Control\FileSystem" "LongPathsEnabled" 1
-          ${Break}
-        ${Case} 3
-          StrCpy $R2 HKCR
-          WriteRegDWORD HKCR "SYSTEM\CurrentControlSet\Control\FileSystem" "LongPathsEnabled" 1
-          ${Break}
-        ${Case} 4
-          StrCpy $R2 HKU
-          WriteRegDWORD HKU "SYSTEM\CurrentControlSet\Control\FileSystem" "LongPathsEnabled" 1
-          ${Break}
-        ${Case} 5
-          StrCpy $R2 HKCC
-          WriteRegDWORD HKCC "SYSTEM\CurrentControlSet\Control\FileSystem" "LongPathsEnabled" 1
-          ${Break}
-      ${EndSwitch}
+    ${Case} 1
+      StrCpy $R2 HKLM
+      WriteRegDWORD HKLM "SYSTEM\CurrentControlSet\Control\FileSystem" "LongPathsEnabled" 1
+      ${Break}
+    ${Case} 2
+      StrCpy $R2 HKCU
+      WriteRegDWORD HKCU "SYSTEM\CurrentControlSet\Control\FileSystem" "LongPathsEnabled" 1
+      ${Break}
+    ${Case} 3
+      StrCpy $R2 HKCR
+      WriteRegDWORD HKCR "SYSTEM\CurrentControlSet\Control\FileSystem" "LongPathsEnabled" 1
+      ${Break}
+    ${Case} 4
+      StrCpy $R2 HKU
+      WriteRegDWORD HKU "SYSTEM\CurrentControlSet\Control\FileSystem" "LongPathsEnabled" 1
+      ${Break}
+    ${Case} 5
+      StrCpy $R2 HKCC
+      WriteRegDWORD HKCC "SYSTEM\CurrentControlSet\Control\FileSystem" "LongPathsEnabled" 1
+      ${Break}
+  ${EndSwitch}
 FunctionEnd
 
 ;-----------------------------------------------------------------
@@ -1485,11 +1517,14 @@ FunctionEnd
 ; Compares the installed version (if any) to the desired version
 ; Results pushed to the stack:
 ; Push $thisVersion : version string found
-; Push $exitCode : "0" means version is installed and is >= desired version.
+; Push $exitCode : "0" = version is installed and is >= desired version.
+;                  "1" = no other version was found (new install needed)
+;                  "2" = older version found (may want to uninstall older version then install new version)
 Function checkVersion
   Var /GLOBAL thisVersion
   Var /GLOBAL versionOffset
-  Var /GLOBAL exitCode  
+  Var /GLOBAL exitCode
+  Var /GLOBAL firstline
   
   StrCpy $thisVersion "Desired version not found"  
 
@@ -1505,9 +1540,10 @@ Function checkVersion
   
     ; Read the error log file content into a variable
     FileOpen $0 $tempLogFile r
-    FileRead $0 $thisVersion
+    FileRead $0 $firstline
     FileClose $0
 
+    ${StrTrimNewLines} $thisVersion $firstline
     StrCpy $logstring "$downloadName version results: $thisVersion"
     Call logMessage
   
@@ -1564,9 +1600,9 @@ Function checkVersion
     Call logMessage
 
     ${If} $R0 == "2"
-    StrCpy $logstring "$downloadName version found: $thisVersion is less than desired $desiredVersion"
+      StrCpy $logstring "$downloadName version found: $thisVersion is less than desired $desiredVersion"
       Call logMessage
-      StrCpy $exitCode "1" ; will require reinstall    
+      StrCpy $exitCode "2" ; will require reinstall    
     ${Else}
       StrCpy $logstring "$downloadName version found: $thisVersion is newer or equal to desired $desiredVersion"
       Call logMessage
@@ -1579,8 +1615,11 @@ Function checkVersion
       StrCpy $exitCode "1" ; will require install
   ${EndIf}
 
-Push $thisVersion
-Push $exitCode
+  ; Return values by pushing to stack
+  StrCpy $logstring "checkVersion exitcode = $exitCode"
+  Call logMessage  
+  Push $thisVersion
+  Push $exitCode
 FunctionEnd
 
 ;-----------------------------------------------------------------
@@ -1664,7 +1703,6 @@ noDriveChange2:
   StrCpy $logstring "Switched to $OUTDIR"
   Call logMessage
   Return
-
 FunctionEnd
 
 ;-----------------------------------------------------------------
@@ -1673,157 +1711,169 @@ FunctionEnd
 ;                to pull the path from the environment variable
 Function getPythonPath
 
-StrCpy $logstring "Running python --version to see if it is reachable."
-Call logMessage
-
-ExecWait 'cmd /C python --version >python_version.txt' $0
-StrCpy $logstring "Python --version return code: $0"
-Call logMessage
-;To force the logic below for testing: IntOp $0 1 - 0
-${If} $0 != 0
-
-  ; If Python was just installed, it will not be in the current environment yet, so 
-  ; we have to find it in a roundabout way, by executing a second shell 
-  ; with runas running at user level.  This seems to cause the shell to pick up the new path.
-  ; Use the "where" command to find the path.
-
-  StrCpy $logstring "Python not found. Trying to find the path using windows shell..."  
+  StrCpy $logstring "Running 'where python' to see if it is reachable."
   Call logMessage
-  
-  StrCpy $cmdFile "getpythonpath.cmd"
-  StrCpy $pathFile "pythonpath.txt"
-  
-  FileOpen $R9 $cmdFile w
-  FileWrite $R9 "@echo off${NEWLINE}"
-  FileWrite $R9 "setlocal enabledelayedexpansion${NEWLINE}"
-
-  FileWrite $R9 "REM Use PowerShell to retrieve the full PATH from the registry and set it in the current session${NEWLINE}"
-  FileWrite $R9 "for /f $\"delims=$\" %%A in ('powershell -command $\"Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' -Name Path | Select-Object -ExpandProperty Path$\"') do (${NEWLINE}"
-  FileWrite $R9 "    set $\"SystemPath=%%A$\"${NEWLINE}"
-  FileWrite $R9 ")${NEWLINE}"
-
-  FileWrite $R9 "for /f $\"delims=$\" %%B in ('powershell -command $\"Get-ItemProperty -Path 'HKCU:\Environment' -Name Path | Select-Object -ExpandProperty Path$\"') do (${NEWLINE}"
-  FileWrite $R9 "    set $\"UserPath=%%B$\"${NEWLINE}"
-  FileWrite $R9 ")${NEWLINE}"
-  FileWrite $R9 "REM Output the full PATH value for verification${NEWLINE}"
-  FileWrite $R9 "echo Full System PATH: %SystemPath%\%UserPath%${NEWLINE}"
-  FileWrite $R9 "REM Update the current session's PATH with both system and user paths to find python${NEWLINE}"
-  FileWrite $R9 "Call set PATH=%SystemPath%;%UserPath%${NEWLINE}"
-  FileWrite $R9 "where python 1>$\"$OUTDIR\$pathFile$\"${NEWLINE}"
-  FileWrite $R9 "echo >NUL${NEWLINE}"   ; Force closed filehandle so we can read it quickly
-  FileWrite $R9 "endlocal${NEWLINE}"
-  FileWrite $R9 "exit /B${NEWLINE}"
-
-  FileClose $R9 
-
-  ClearErrors
-
-  ; Get path to windows command line exe
-  ReadEnvStr $R0 COMSPEC
-  StrCpy $logstring 'powershell -WindowStyle hidden Start-Process -FilePath "$R0"-ArgumentList /C,"$OUTDIR\$cmdFile"'
-  Call logMessage 
-
-  ; Set timeout to give the powershell command time to complete before attempting to read the path file (in milliseconds)
-  nsExec::ExecToStack /TIMEOUT=3000 'powershell -WindowStyle hidden Start-Process -FilePath "$R0" -ArgumentList /C,"$OUTDIR\$cmdFile"'
-  Pop $0 ;return value is first on stack
-  
-  ${If} $0 != 0
-    Pop $1 ;get error message
-    StrCpy $logstring "Powershell results: $0 $1"
+  ; Check if desired or later version is already installed
+  StrCpy $desiredVersion $pythonVersion
+  Call checkVersion
+  Pop $0 ; get exit code
+  ${If} $0 == "0"
+    Pop $1 ; get version
+    StrCpy $logstring "Reachable Python version is good: $1"
     Call logMessage
-  
+    ; if it can be found directly, no need to use whole path
+    StrCpy $pythonExe "python"
   ${Else}
-    ${For} $R1 1 5
-      ; Open the path file.  If it fails, wait a few seconds and retry a few times before aborting.
-      ClearErrors
-      FileOpen $R9 "$OUTDIR\$pathFile" r
-      ifErrors sleepLoop3
-
-      StrCpy $logstring "Reading $pathFile..."
+    ; Older version or not found at all
+    ${If} $0 == "2"
+      Pop $1 ; get version
+      StrCpy $logstring "Reachable Python version is the wrong one: $1"
       Call logMessage
-      ${Break}
+    ${Else}
+      StrCpy $logstring "Python is not reachable."
+      Call logMessage    
+    ${EndIf}
 
-      sleepLoop3:
-      StrCpy $logstring "Error opening $pathFile.  Waiting 2 seconds and retrying, to make sure windows closed it..."
-      Call logMessage      
-      Sleep 2000  ; Wait for 2 seconds to ensure the file is written    
-    ${Next}
+    ; If Python was just installed, it will not be in the current environment yet, so 
+    ; we have to find it in a roundabout way, by executing a second shell 
+    ; with runas running at user level.  This seems to cause the shell to pick up the new path.
+    ; Use the "where" command to find the path.
 
-    ifErrors 0 pythonFileOK
-      ;StrCpy $logstring "Unable to read $pathFile. Terminating installer."
-      StrCpy $logstring "Unable to read $pathFile. Try py instead..."
+    StrCpy $logstring "Trying to find the new path using windows shell..."  
+    Call logMessage
+    
+    StrCpy $cmdFile "getpythonpath.cmd"
+    StrCpy $pathFile "pythonpath.txt"
+    Delete $pathFile
+    ClearErrors
+    FileOpen $R9 $cmdFile w
+    FileWrite $R9 "@echo off${NEWLINE}"
+    FileWrite $R9 "setlocal enabledelayedexpansion${NEWLINE}"
+
+    FileWrite $R9 "REM Use PowerShell to retrieve the full PATH from the registry and set it in the current session${NEWLINE}"
+    FileWrite $R9 "for /f $\"delims=$\" %%A in ('powershell -command $\"Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' -Name Path | Select-Object -ExpandProperty Path$\"') do (${NEWLINE}"
+    FileWrite $R9 "    set $\"SystemPath=%%A$\"${NEWLINE}"
+    FileWrite $R9 ")${NEWLINE}"
+
+    FileWrite $R9 "for /f $\"delims=$\" %%B in ('powershell -command $\"Get-ItemProperty -Path 'HKCU:\Environment' -Name Path | Select-Object -ExpandProperty Path$\"') do (${NEWLINE}"
+    FileWrite $R9 "    set $\"UserPath=%%B$\"${NEWLINE}"
+    FileWrite $R9 ")${NEWLINE}"
+    FileWrite $R9 "REM Output the full PATH value for verification${NEWLINE}"
+    FileWrite $R9 "echo Full System PATH: %SystemPath%\%UserPath%${NEWLINE}"
+    FileWrite $R9 "REM Update the current session's PATH with both system and user paths to find python${NEWLINE}"
+    FileWrite $R9 "Call set PATH=%SystemPath%;%UserPath%${NEWLINE}"
+    FileWrite $R9 "where python 1>$\"$OUTDIR\$pathFile$\"${NEWLINE}"
+    FileWrite $R9 "echo >NUL${NEWLINE}"   ; Force closed filehandle so we can read it quickly
+    FileWrite $R9 "endlocal${NEWLINE}"
+    FileWrite $R9 "exit /B${NEWLINE}"
+
+    FileClose $R9 
+
+    ClearErrors
+
+    ; Get path to windows command line executable to use with powershell
+    ReadEnvStr $R0 COMSPEC
+    StrCpy $logstring 'powershell Start-Process -FilePath "$R0"-ArgumentList /C,"$OUTDIR\$cmdFile"'
+    Call logMessage    
+
+    ; Set timeout to give the powershell command time to complete before attempting to read the path file (in milliseconds)
+    ;nsExec::ExecToStack /TIMEOUT=${WAITTIME} 'powershell Start-Process -FilePath "$R0" -ArgumentList /C,"$OUTDIR\$cmdFile"'
+    nsExec::ExecToStack 'powershell Start-Process -FilePath "$R0" -ArgumentList /C,"$OUTDIR\$cmdFile"'
+    Pop $0 ;return value is first on stack    
+    ${If} $0 != 0
+      Pop $1 ;get error message
+      StrCpy $logstring "Powershell results: $0 $1"
       Call logMessage
-      goto tryPy      
-      ; MessageBox MB_OK|MB_ICONEXCLAMATION $logstring /SD IDOK
-      ; Abort
+    ${Else}
+      ${For} $R1 1 5
+        ; Open the path file.  If it fails, wait a few seconds and retry a few times before aborting.
+        ClearErrors
+        FileOpen $R9 $pathFile r
+        ifErrors sleepLoop3
 
-    pythonFileOK:
-      ; Read the first line of the path file created by the script
-      FileRead $R9 $R7
-      FileClose $R9
-      
-      ${StrTrimNewLines} $pythonPath $R7
-      ${If} $pythonPath == ""
-        StrCpy $logstring "pythonPath is empty, waiting 2 seconds and trying again..."
+        StrCpy $logstring "Reading $pathFile..."
         Call logMessage
-        ${For} $R1 1 5          
-          Sleep 2000  ; Wait for 2 seconds
-          ; Open the path file.  If it fails, wait a few seconds and retry a few times before aborting.
-          ClearErrors
-          FileOpen $R9 "$OUTDIR\$pathFile" r
-          ifErrors sleepLoop4
+        ${Break}
 
-          StrCpy $logstring "Reading $pathFile..."
+        sleepLoop3:
+        StrCpy $logstring "Error opening $pathFile.  Waiting ${WAITTIME} milliseconds and retrying, to make sure windows closed it..."
+        Call logMessage      
+        Sleep ${WAITTIME}  ; Wait for some seconds to ensure the file is written    
+      ${Next}
+
+      ifErrors 0 pythonFileOK
+        ;StrCpy $logstring "Unable to read $pathFile. Terminating installer."
+        StrCpy $logstring "Unable to read $pathFile. Try py instead..."
+        Call logMessage
+        goto tryPy
+        ; MessageBox MB_OK|MB_ICONEXCLAMATION $logstring /SD IDOK
+        ; Abort
+
+      pythonFileOK:
+        ; Read the first line of the path file created by the script
+        FileRead $R9 $R7
+        FileClose $R9
+        
+        ${StrTrimNewLines} $pythonPath $R7
+        ${If} $pythonPath == ""
+          StrCpy $logstring "pythonPath is empty, waiting ${WAITTIME} milliseconds and trying again..."
           Call logMessage
-          FileRead $R9 $R7
-          FileClose $R9
-          
-          ${StrTrimNewLines} $pythonPath $R7
-          ${If} $pythonPath == "" 
-            StrCpy $logstring "pythonPath is empty, waiting 2 seconds and retrying..."
+          ${For} $R1 1 5
+            ; Open and read the path file.  If it fails, wait a few seconds and retry a few times
+            Sleep ${WAITTIME}
+            
+            ClearErrors
+            FileOpen $R9 "$OUTDIR\$pathFile" r
+            ifErrors sleepLoop4
+
+            StrCpy $logstring "Reading $pathFile..."
             Call logMessage
-            goto nextLoopGit
-          ${EndIf}
+            FileRead $R9 $R7
+            FileClose $R9
+            
+            ${StrTrimNewLines} $pythonPath $R7
+            ${If} $pythonPath == "" 
+              StrCpy $logstring "pythonPath is empty, waiting ${WAITTIME} milliseconds and retrying..."
+              Call logMessage
+              goto nextLoopPython
+            ${EndIf}
 
-          sleepLoop4:
-          StrCpy $logstring "Error opening $pathFile.  Waiting 2 seconds and retrying..."
-          Call logMessage     
+            sleepLoop4:
+            StrCpy $logstring "Error opening $pathFile.  Waiting ${WAITTIME} milliseconds and retrying..."
+            Call logMessage     
 
-          nextLoopGit:
-        ${Next}
+            nextLoopPython:
+          ${Next}
 
-        ifErrors 0 pythonFileOK2
-          ;StrCpy $logstring "Unable to read $pathFile. Terminating installer."
-          StrCpy $logstring "Unable to read $pathFile. Try py instead..."
-          Call logMessage
-          goto tryPy
-          ; MessageBox MB_OK|MB_ICONEXCLAMATION $logstring /SD IDOK
-          ; Abort
-        pythonFileOK2:
-        ${If} $pythonPath == "" 
-            ;StrCpy $logstring "pythonPath is empty.  Unable to continue with installation."
-            StrCpy $logstring "pythonPath is empty.  Try py instead..."
+          ifErrors 0 pythonFileOK2
+            ClearErrors
+            ;StrCpy $logstring "Unable to read $pathFile. Terminating installer."
+            StrCpy $logstring "Unable to read $pathFile. Try py instead..."
             Call logMessage
             goto tryPy
-            ;MessageBox MB_OK|MB_ICONEXCLAMATION $logstring /SD IDOK
-            ;Abort
+            ; MessageBox MB_OK|MB_ICONEXCLAMATION $logstring /SD IDOK
+            ; Abort
+          pythonFileOK2:
+          ${If} $pythonPath == "" 
+              ;StrCpy $logstring "pythonPath is empty.  Unable to continue with installation."
+              StrCpy $logstring "pythonPath is empty.  Try py instead..."
+              Call logMessage
+              goto tryPy
+              ;MessageBox MB_OK|MB_ICONEXCLAMATION $logstring /SD IDOK
+              ;Abort
+          ${EndIf}
+
         ${EndIf}
 
-      ${EndIf}
+        StrCpy $logstring "Python path: $pythonPath"
+        Call logMessage
 
-      StrCpy $logstring "python path: $pythonPath"
-      Call logMessage
-
-      StrCpy $pythonExe "$pythonPath"
-    
+        StrCpy $pythonExe "$pythonPath"
+      
+    ${EndIf}  
   ${EndIf}
 
-${Else}
-  ; if it can be found directly, no need to use whole path
-  StrCpy $pythonExe "python"
-${EndIf}
 goto skipPy
-
 tryPy:
 ExecWait 'cmd /C py --version >python_version.txt' $0
 StrCpy $logstring "Py launcher --version return code: $0"
@@ -1842,10 +1892,11 @@ ${Else}
 ${EndIf}
 
 skipPy:
-;Delete $cmdFile
-;Delete $pathFile
-StrCpy $logstring "Python Path: $pythonExe"
-Call logMessage 
+  ;Delete $cmdFile
+  ;Delete $pathFile
+  ClearErrors
+  StrCpy $logstring "Final Python Path: $pythonExe"
+  Call logMessage 
 FunctionEnd
 
 ;-----------------------------------------------------------------
@@ -1858,7 +1909,7 @@ StrCpy $logstring "Running git --version to see if it is reachable."
 Call logMessage
 
 ExecWait 'cmd /C git --version >git_version.txt' $0
-StrCpy $logstring "Git --version return code: $exitCode"
+StrCpy $logstring "Git --version return code: $0"
 Call logMessage
 ;To force the logic below for testing: IntOp $0 1 - 0
 ${If} $0 != 0
@@ -1873,7 +1924,8 @@ ${If} $0 != 0
 
   StrCpy $cmdFile "getgitpath.cmd"
   StrCpy $pathFile "gitpath.txt"
-  
+  Delete $pathFile
+  ClearErrors
   FileOpen $R9 $cmdFile w
   FileWrite $R9 "@echo off${NEWLINE}"
   FileWrite $R9 "setlocal enabledelayedexpansion${NEWLINE}"
@@ -1901,11 +1953,11 @@ ${If} $0 != 0
 
   ; Get path to windows command line exe
   ReadEnvStr $R0 COMSPEC
-  StrCpy $logstring 'powershell -WindowStyle hidden Start-Process -FilePath "$R0"-ArgumentList /C,"$OUTDIR\$cmdFile"'
+  StrCpy $logstring 'powershell Start-Process -FilePath "$R0"-ArgumentList /C,"$OUTDIR\$cmdFile"'
   Call logMessage 
 
   ; Set timeout to give the powershell command time to complete before attempting to read the path file (in milliseconds)
-  nsExec::ExecToStack /TIMEOUT=3000 'powershell -WindowStyle hidden Start-Process -FilePath "$R0" -ArgumentList /C,"$OUTDIR\$cmdFile"'
+  nsExec::ExecToStack /TIMEOUT=${WAITTIME} 'powershell Start-Process -FilePath "$R0" -ArgumentList /C,"$OUTDIR\$cmdFile"'
   Pop $0 ;return value is first on stack
   ${If} $0 != 0
     Pop $1 ;get error message
@@ -1925,9 +1977,9 @@ ${If} $0 != 0
       ${Break}
 
       sleepLoop3:
-      StrCpy $logstring "Error opening $pathFile.  Waiting 2 seconds and retrying, to make sure windows closed it..."
+      StrCpy $logstring "Error opening $pathFile.  Waiting ${WAITTIME} milliseconds and retrying, to make sure windows closed it..."
       Call logMessage      
-      Sleep 2000  ; Wait for 2 seconds to ensure the file is written    
+      Sleep ${WAITTIME}  ; Wait for some seconds to ensure the file is written    
     ${Next}
 
     ifErrors 0 gitFileOK
@@ -1943,11 +1995,12 @@ ${If} $0 != 0
       
       ${StrTrimNewLines} $gitPath $R7
       ${If} $gitPath == ""
-        StrCpy $logstring "gitPath is empty, waiting 2 seconds and trying again..."
+        StrCpy $logstring "gitPath is empty, waiting ${WAITTIME} milliseconds and trying again..."
         Call logMessage
-        ${For} $R1 1 5          
-          Sleep 2000  ; Wait for 2 seconds
-          ; Open the path file.  If it fails, wait a few seconds and retry a few times before aborting.
+        ${For} $R1 1 5
+          ; Open and read the path file.  If it fails, wait a few seconds and retry a few times
+          Sleep ${WAITTIME}
+          
           ClearErrors
           FileOpen $R9 "$OUTDIR\$pathFile" r
           ifErrors sleepLoop4
@@ -1959,13 +2012,13 @@ ${If} $0 != 0
           
           ${StrTrimNewLines} $gitPath $R7
           ${If} $gitPath == "" 
-            StrCpy $logstring "gitPath is empty, waiting 2 seconds and retrying..."
+            StrCpy $logstring "gitPath is empty, waiting ${WAITTIME} milliseconds and retrying..."
             Call logMessage
             goto nextLoopGit
           ${EndIf}
 
           sleepLoop4:
-          StrCpy $logstring "Error opening $pathFile.  Waiting 2 seconds and retrying..."
+          StrCpy $logstring "Error opening $pathFile.  Waiting ${WAITTIME} milliseconds and retrying..."
           Call logMessage     
 
           nextLoopGit:
@@ -1998,9 +2051,134 @@ ${Else}
   StrCpy $gitExe "git"
 ${EndIf}
 
-;Delete $cmdFile
-;Delete $pathFile
-StrCpy $logstring "Git Path: $gitExe"
-Call logMessage 
+  ;Delete $cmdFile
+  ;Delete $pathFile
+  ClearErrors
+  StrCpy $logstring "Git Path: $gitExe"
+  Call logMessage 
+FunctionEnd
+
+;-----------------------------------------------------------------
+; .onInstSuccess - Executes at the end of a successful installation 
+Function .onInstSuccess
+    StrCpy $logstring "Installation completed successfully.${NEWLINE}${NEWLINE}A-Z+T will be launched now to finish configuration."
+    Call logMessage    
+    MessageBox MB_OK $logstring
+    StrCpy $logstring  "Doing first run of A-Z+T, to make sure modules are installed..."
+    Call logMessage
+
+    ; File cleanup - close log and delete temp logs    
+    Delete "git_error.log"
+    Delete "charis_error.log"
+    Delete "praat_error.log"
+    
+    ClearErrors
+    StrCpy $logstring  "ExecShell open $pythonExe $aztfilename SW_SHOW"
+    Call logMessage
+    FileClose $log0
+    ExecShell "open" "$pythonExe" "$aztfilename" SW_SHOW
+FunctionEnd
+
+;-----------------------------------------------------------------
+;.onInstFailed - Executes at the end of an installation abort
+Function .onInstFailed
+  StrCpy $logstring  "${APPNAME} installation aborted."
+  Call logMessage
+  FileClose $log0
+  MessageBox MB_YESNO "${APPNAME} installation aborted.  View log file?" IDNO NoReadme
+      Exec "notepad.exe $logfile"
+  NoReadme:
+FunctionEnd
+
+;-----------------------------------------------------------------
+; .onInit is executed automatically when the installer is started
+;     Use it to initialize features and variables
+Function .onInit
+
+  # Define paths  
+
+  StrCpy $pythonversion "3.12.4"
+  StrCpy $pythonfilename "python-$pythonversion-amd64.exe"
+  StrCpy $pythonsize "^(25.5322 Megabyte^(s^); 26772456 bytes^)"
+  StrCpy $pythonurl "https://www.python.org/ftp/python/3.12.4/$pythonfilename"
+
+  StrCpy $gitversion "2.45.2"
+  StrCpy $gitfilename "Git-$gitversion-64-bit.exe"
+  StrCpy $gitsize "^(68.1 MB; 68,131,584 bytes^)"
+  StrCpy $giturl "https://github.com/git-for-windows/git/releases/download/v2.45.2.windows.1/$gitfilename"
+
+  StrCpy $aztRepoName "azt.git"
+  StrCpy $aztRepoURL "https://github.com/kent-rasmussen/azt.git"
+  StrCpy $aztfilename "$INSTDIR\main.py"
+  StrCpy $transcriberfilename "$INSTDIR\transcriber.py"
+
+  StrCpy $praatversion "6413"
+  StrCpy $praatfilename "praat$praatversion_win-intel64.zip"
+  StrCpy $praaturl "https://www.fon.hum.uva.nl/praat/$praatfilename"
+
+  StrCpy $xlpversion "3-10"
+  StrCpy $xlpfilename "XLingPaper$xlpversion-1XXEPersonalEditionFullSetup.exe"
+  StrCpy $xlpurl "https://software.sil.org/downloads/r/xlingpaper/$xlpfilename"
+
+  StrCpy $hgversion "6.0"
+  StrCpy $hgfilename "Mercurial-$hgversion-x64.exe"
+  StrCpy $hgurl "https://www.mercurial-scm.org/release/windows/$hgfilename"
+
+  StrCpy $charisversion "6.200"
+  StrCpy $charisfilename "CharisSIL-$charisversion"
+  StrCpy $chariszipfile "CharisSIL-$charisversion.zip"
+  StrCpy $charisurl "https://software.sil.org/downloads/r/charis/$chariszipfile"
+
+  StrCpy $filepath $EXEDIR  
+  ; Destination directory for temporary installation files (OUTDIR)
+  SetOutPath $filepath
+
+  ; Include icons for setting in shortcuts - must come after SetOutPath is defined
+  File "azt.ico"
+  File "Transcribe-Tone.ico"
+    
+  ClearErrors
+  StrCpy $logfile "${INSTALLERNAME}.log"
+  FileOpen $log0 $logfile w
+
+  SetDetailsPrint both
+
+  StrCpy $filename $EXEFILE
+  StrCpy $logstring  "Installer is $filepath\$filename"  
+  Call logMessage 
+
+  StrCpy $0 $DESKTOP
+  StrCpy $logstring "DESKTOP is $DESKTOP"
+  Call logMessage 
+
+  # set sections as selected and read-only
+  IntOp $0 ${SF_SELECTED} | ${SF_RO}  
+  SectionSetFlags ${pythonId} $0
+  SectionSetFlags ${gitId} $0
+  SectionSetFlags ${aztId} $0
+  SectionSetFlags ${charisId} $0
+
+  ; Check if the installer is running with admin rights
+  StrCpy $logstring "-----  Starting Installation ----- ${NEWLINE}Installing from $filepath"
+  Call logMessage
+  
+  !insertmacro MUI_HEADER_TEXT_PAGE "${TITLENAME}"  "Test / Set Admin Mode..."
+  StrCpy $logstring "${NEWLINE}-----  Test / Set Admin Mode ----- "
+  Call logMessage
+  UserInfo::GetAccountType
+  Pop $0
+  ${If} $0 == 'Admin'
+    StrCpy $logstring 'Installer running in admin mode'
+    ;MessageBox MB_OK $logstring
+    Call logMessage
+    StrCpy $withadmin "1"
+  ${Else}
+    ; StrCpy $logstring "Installer is not able to run with admin rights, installing for current user only: $0"
+    StrCpy $logstring "Installer must be run as Administrator."
+    Call logMessage
+    MessageBox MB_OK|MB_ICONEXCLAMATION $logstring /SD IDOK
+    StrCpy $withadmin "0"
+    Abort
+  ${EndIf}  
 
 FunctionEnd
