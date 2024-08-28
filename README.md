@@ -34,15 +34,19 @@ During installation, if a component has already been installed and is at the req
 
 If successful, the installer will launch A-Z+T (main.py).  The first time A-Z+T is launched, it will perform some scaling configuration, which may take a few minutes.  
 
+### Troubleshooting
+
 The installation log AZT_Installer.log will be in the same directory as AZT_Installer.exe.  This log documents the installation steps in detail and may be useful for troubleshooting any installation issues.
+
+If the installer fails, it is safe to restart it.  If the failure was due to not being able to locate python or git, often times the second pass will pick up the new path and continue the installation successfully.   Re-running the installer multiple times does not create any problems as the only change made will be to refresh the azt code from the git repository.
+
 
 ## Developer Notes
 
 The AZT installer was created using [NSIS version 3.10](https://nsis.sourceforge.io/Main_Page)
 
 
-
-The script file is AZT_Installer_UI.nsi.
+The script file is `AZT_Installer_UI.nsi`.
 
 ### Dependencies
 
@@ -53,35 +57,37 @@ The script file is AZT_Installer_UI.nsi.
   !include FileFunc.nsh
   !include StrFunc.nsh    
   !include WinMessages.nsh
-  
+  !include Locate.nsh
 ```
 
 ### Plugins
 
 - [NsExec](https://nsis.sourceforge.io/NsExec_plug-in) - included as part of NSIS.
 
-The following are not part of the NSIS base installation.  Zip files provided should be unzipped directly to the NSIS installaton dir \( C:\Program Files (x86)\NSIS \)
+  The following are not part of the NSIS base installation.  
+  Install Zip files by extracting directly to the NSIS installaton directory 
+  \(usually C:\Program Files (x86)\NSIS \)
 
 - [EnVar](https://nsis.sourceforge.io/EnVar_plug-in)
 - [Inetc](https://nsis.sourceforge.io/Inetc_plug-in)
 - [Locate](https://nsis.sourceforge.io/Locate_plugin)  
     - To install Locate, run install.exe but must also copy locate.dll from Plugins to each of the subdirectories otherwise vscode doesn't find it
-    - Locate documenttation will be installed in C:\Program Files (x86)\NSIS\Docs\Locate\Readme.txt    
+    - Locate macro documentation will be installed to <PROGRMFILES>\NSIS\Docs\Locate\Readme.txt    
 
 
 ### Important
 
-- Python is required to run A-Z+T.
+- Python is required to run A-Z+T.  Failure to install and later locate the python executable will terminate the installer.
 
-- Git is required to clone the A-Z+T repository during installation.
+- Git is required to clone the A-Z+T repository during installation. Failure to install and later locate the git executable will terminate the installer.
 
-- If the AZT directory exists, `git pull origin` will refresh the code to the latest version .
+- If the AZT directory already exists and is not empty, `git pull origin` will refresh the code to the latest version.
 
-- Charis SIL fonts will be installed if possible, but if installation of the fonts fails, the installer will not fail.   
+- Charis SIL fonts will be installed if possible, but if installation of the fonts fails, the installer will continue.  Failure may indicate fonts already exist.
 
-- If installation of any of the optional components fails, the installer will continue attempting to install remaining components.
+- Optional components will not reinstall if they already exist in <PROGRAMFILES>.   If installation of any of the optional components fails, the installer will continue attempting to install remaining components.
 
-- If Python and/or Git are installed for the first time, the installer will not find them in the subsequent commands.  So we run a windows batch file from a second shell to get the updated path into an output file and then read the path from there for use in the remainder of the script.   Last resort will be to use the py launcher if that is found but the python path is not.
+- If Python and/or Git are installed for the first time, the installer will not be able to locate them in the subsequent commands.  To work around this, powershell will execute a windows batch file from a second shell to read the newly set Path environment variables from the registry.  A PATH command temporarily sets the new path in the windows shell, and the `where` command redirects the path to an output file.   That full path will be used for the remainder of the script.   In the case of Python, if the path can still not be found, the final attempt is to use the py launcher, which can sometimes be found in the path even when python.exe cannot.
 
 ## References
 

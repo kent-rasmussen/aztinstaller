@@ -1329,6 +1329,18 @@ Function positionInstWindow
 FunctionEnd
 
 ;-----------------------------------------------------------------
+; logMessage: Function opens the file to be open for write at handle $log0
+; Parms:       $logstring contains the string to write to the file
+; Function logMessage
+;   FileOpen $log0 $logfile a
+;   SetDetailsPrint both  ; some macros seem to be changing this, reset it to make sure DetailPrint write to console
+;   DetailPrint $logstring
+;   FileWrite $log0 "$logstring${NEWLINE}"
+;   FileClose $log0
+;   ClearErrors
+; FunctionEnd
+
+;-----------------------------------------------------------------
 ; logMessage: Function expects the file to be open for write at handle $log0
 ; Parms:       $logstring contains the string to write to the file
 ;              $log0 contains the output log handle, opened in .onInit 
@@ -1892,8 +1904,7 @@ ${Else}
 ${EndIf}
 
 skipPy:
-  ;Delete $cmdFile
-  ;Delete $pathFile
+
   ClearErrors
   StrCpy $logstring "Final Python Path: $pythonExe"
   Call logMessage 
@@ -2050,9 +2061,7 @@ ${Else}
   ; if it can be found directly, no need to use whole path
   StrCpy $gitExe "git"
 ${EndIf}
-
-  ;Delete $cmdFile
-  ;Delete $pathFile
+  
   ClearErrors
   StrCpy $logstring "Git Path: $gitExe"
   Call logMessage 
@@ -2067,24 +2076,29 @@ Function .onInstSuccess
     StrCpy $logstring  "Doing first run of A-Z+T, to make sure modules are installed..."
     Call logMessage
 
-    ; File cleanup - close log and delete temp logs    
+    ; File cleanup
     Delete "git_error.log"
     Delete "charis_error.log"
     Delete "praat_error.log"
+    Delete "getgitpath.cmd"
+    Delete "gitpath.txt"
+    Delete "getpythonpath.cmd"
+    Delete "pythonpath.txt"
     
     ClearErrors
     StrCpy $logstring  "ExecShell open $pythonExe $aztfilename SW_SHOW"
     Call logMessage
-    FileClose $log0
+    FileClose $log0   ; close the installation log file
     ExecShell "open" "$pythonExe" "$aztfilename" SW_SHOW
 FunctionEnd
 
 ;-----------------------------------------------------------------
 ;.onInstFailed - Executes at the end of an installation abort
+;                Do not delete temporary files in case they are needed for troubleshooting
 Function .onInstFailed
   StrCpy $logstring  "${APPNAME} installation aborted."
   Call logMessage
-  FileClose $log0
+  FileClose $log0   ; close the installation log file
   MessageBox MB_YESNO "${APPNAME} installation aborted.  View log file?" IDNO NoReadme
       Exec "notepad.exe $logfile"
   NoReadme:
@@ -2136,13 +2150,16 @@ Function .onInit
   ; Include icons for setting in shortcuts - must come after SetOutPath is defined
   File "azt.ico"
   File "Transcribe-Tone.ico"
-    
-  ClearErrors
-  StrCpy $logfile "${INSTALLERNAME}.log"
+  
+  ; Set output installation log file name. (Ref: logMessage function)
+  StrCpy $logfile "${INSTALLERNAME}.log"  
   FileOpen $log0 $logfile w
+  ifErrors 0 continue_init
+    StrCpy $logstring "Unable to open the installation log file.  Make sure you have write access to the installation directory: $EXEDIR"
+    MessageBox MB_OK|MB_ICONEXCLAMATION $logstring /SD IDOK
+    Abort
 
-  SetDetailsPrint both
-
+  continue_init:
   StrCpy $filename $EXEFILE
   StrCpy $logstring  "Installer is $filepath\$filename"  
   Call logMessage 
