@@ -658,13 +658,12 @@ ${LoopUntil} $3 == $2
 StrCpy $logstring "git config path: $newPathString"
 
 ClearErrors
+Var /GLOBAL cmd
 ; Set the safe.directory in both --system and --global, using both "\" and "/" paths to be safe
 ; Developer Notes:  To validate in a windows command prompt, use:
 ;                     git config --system --get-all safe.directory
 ;                   To clear them: 
 ;                     git config --system --unset-all safe.directory
-StrCpy $logstring "Executing $\"$gitExe$\" config --system --add safe.directory $INSTDIR ..."
-Call logMessage
 
 ; Define the path to the log file
 StrCpy $tempLogFile "git_error.log"
@@ -673,52 +672,82 @@ ${If} $gitExe == ""  ; Should have been set during git install, else assume path
   StrCpy $gitExe "git"
 ${EndIf}
 
-ExecWait 'cmd /C $\"$gitExe$\" config --system --add safe.directory $INSTDIR 2>$tempLogFile' $0
+StrCpy $cmd `$\"$gitExe$\" config --system --add safe.directory $\"$INSTDIR$\"`
+StrCpy $logstring "Executing $cmd ..."
+Call logMessage
+ExecWait `cmd /C $\"$cmd$\" 2>$tempLogFile` $0
 StrCpy $logstring "   Return value: $0"
 Call logMessage
-ifErrors errorExitAzt
+${If} $0 != 0
+  FileOpen $0 $tempLogFile r
+  FileRead $0 $ReturnError
+  FileClose $0
+  StrCpy $logstring "ERROR: Git config error:  $ReturnError"
+  Call logMessage
+  abort
+${EndIf}
 
-StrCpy $logstring "Executing git config --system --add safe.directory $newPathString ..."
+StrCpy $cmd `$\"$gitExe$\" config --system --add safe.directory $\"$newPathString$\"`
+StrCpy $logstring "Executing $cmd ..."
 Call logMessage
-ExecWait 'cmd /C $\"$gitExe$\" config --system --add safe.directory $newPathString >$tempLogFile' $0
+ExecWait `cmd /C $\"$cmd$\" 2>$tempLogFile` $0
 StrCpy $logstring "   Return value: $0"
 Call logMessage
-ifErrors errorExitAzt
+${If} $0 != 0
+  FileOpen $0 $tempLogFile r
+  FileRead $0 $ReturnError
+  FileClose $0
+  StrCpy $logstring "ERROR: Git config error:  $ReturnError"
+  Call logMessage
+  abort
+${EndIf}
 
-StrCpy $logstring "Executing git config --global --add safe.directory $INSTDIR ..."
-ExecWait 'cmd /C $\"$gitExe$\" config --global --add safe.directory $INSTDIR >$tempLogFile' $0
+StrCpy $cmd `$\"$gitExe$\" config --global --add safe.directory $\"$INSTDIR$\"`
+StrCpy $logstring "Executing $cmd ..."
+Call logMessage
+ExecWait `cmd /C $\"$cmd$\" 2>$tempLogFile` $0
 StrCpy $logstring "   Return value: $0"
 Call logMessage
-ifErrors errorExitAzt
+${If} $0 != 0
+  FileOpen $0 $tempLogFile r
+  FileRead $0 $ReturnError
+  FileClose $0
+  StrCpy $logstring "ERROR: Git config error:  $ReturnError"
+  Call logMessage
+  abort
+${EndIf}
 
-StrCpy $logstring "Executing git config --global --add safe.directory $newPathString ..."
-ExecWait 'cmd /C $\"$gitExe$\" config --global --add safe.directory $newPathString >$tempLogFile' $0
+StrCpy $cmd `$\"$gitExe$\" config --global --add safe.directory $\"$newPathString$\"`
+StrCpy $logstring "Executing $cmd ..."
+Call logMessage
+ExecWait `cmd /C $\"$cmd$\" 2>$tempLogFile` $0
 StrCpy $logstring "   Return value: $0"
 Call logMessage
-ifErrors errorExitAzt
+${If} $0 != 0
+  FileOpen $0 $tempLogFile r
+  FileRead $0 $ReturnError
+  FileClose $0
+  StrCpy $logstring "ERROR: Git config error:  $ReturnError"
+  Call logMessage
+  abort
+${EndIf}
 
-StrCpy $logstring "Executing $\"$gitExe$\" clone $azt $INSTDIR"
+StrCpy $cmd `$\"$gitExe$\" clone $azt $\"$INSTDIR$\"`
+StrCpy $logstring "Executing $cmd ..."
 Call logMessage
 ClearErrors
-
 ; Use ExecToStack instead of ExecWait to prevent the windows command prompt from showing
-; The problem is on first install, this won't find git, 
-; so we have to search for the full path to feed to the command line
-nsExec::ExecToStack 'cmd /C "$\"$gitExe$\"" clone $azt $INSTDIR 2>$tempLogFile'
+nsExec::ExecToStack 'cmd /C $\"$cmd$\" 2>$tempLogFile'
 Pop $0
 StrCpy $logstring "   Return value: $0"
 Call logMessage
 ${If} $0 != 0
-
-  ; Read the error log file content into a variable
   FileOpen $0 $tempLogFile r
   FileRead $0 $ReturnError
   FileClose $0
-
-  ; If the error says repo already exists, just update it.  
   StrCpy $logstring "ERROR: Git clone error:  $ReturnError"
   Call logMessage
-
+; If the error says repo already exists, just update it.  
   ${StrStr} $2 $ReturnError "exists and is not an empty directory"
   ${If} $2 != "" 
     StrCpy $logstring "AZT Repo already exists, updating..."
@@ -1684,7 +1713,7 @@ noDriveChange:
     
   StrCpy $tempLogFile "git_error.log"
   ClearErrors
-  ExecWait 'cmd /C $\"$gitExe$\" pull origin 2>$tempLogFile' $0
+  ExecWait 'cmd /C $\"$\"$gitExe$\" pull origin$\" 2>$tempLogFile' $0
   StrCpy $logstring "   Return value: $0"
   Call logMessage
   ${If} $0 != 0
