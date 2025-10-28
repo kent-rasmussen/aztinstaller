@@ -2140,34 +2140,34 @@ Function .onInit
 
   # Define paths  
 
-  StrCpy $pythonversion "3.12.4"
+  StrCpy $pythonversion "3.13.7"
   StrCpy $pythonfilename "python-$pythonversion-amd64.exe"
-  StrCpy $pythonsize "^(25.5322 Megabyte^(s^); 26772456 bytes^)"
-  StrCpy $pythonurl "https://www.python.org/ftp/python/3.12.4/$pythonfilename"
+  StrCpy $pythonsize "^(27.47348 Megabyte^(s^); 28808040 bytes^)"
+  StrCpy $pythonurl "https://www.python.org/ftp/python/$pythonversion/$pythonfilename"
 
-  StrCpy $gitversion "2.45.2"
+  StrCpy $gitversion "2.51.2"
   StrCpy $gitfilename "Git-$gitversion-64-bit.exe"
   StrCpy $gitsize "^(68.1 MB; 68,131,584 bytes^)"
-  StrCpy $giturl "https://github.com/git-for-windows/git/releases/download/v2.45.2.windows.1/$gitfilename"
+  StrCpy $giturl "https://github.com/git-for-windows/git/releases/download/v$gitversion.windows.1/$gitfilename"
 
   StrCpy $aztRepoName "azt.git"
   StrCpy $aztRepoURL "https://github.com/kent-rasmussen/azt.git"
   StrCpy $aztfilename "$INSTDIR\main.py"
   StrCpy $transcriberfilename "$INSTDIR\transcriber.py"
 
-  StrCpy $praatversion "6413"
+  StrCpy $praatversion "6446"
   StrCpy $praatfilename "praat$praatversion_win-intel64.zip"
   StrCpy $praaturl "https://www.fon.hum.uva.nl/praat/$praatfilename"
 
-  StrCpy $xlpversion "3-10"
-  StrCpy $xlpfilename "XLingPaper$xlpversion-1XXEPersonalEditionFullSetup.exe"
+  StrCpy $xlpversion "3-17-0"
+  StrCpy $xlpfilename "XLingPaper$xlpversionXXEPersonalEditionFullSetup.exe"
   StrCpy $xlpurl "https://software.sil.org/downloads/r/xlingpaper/$xlpfilename"
 
   StrCpy $hgversion "6.0"
   StrCpy $hgfilename "Mercurial-$hgversion-x64.exe"
   StrCpy $hgurl "https://www.mercurial-scm.org/release/windows/$hgfilename"
 
-  StrCpy $charisversion "6.200"
+  StrCpy $charisversion "7.000"
   StrCpy $charisfilename "CharisSIL-$charisversion"
   StrCpy $chariszipfile "CharisSIL-$charisversion.zip"
   StrCpy $charisurl "https://software.sil.org/downloads/r/charis/$chariszipfile"
