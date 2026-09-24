@@ -2171,7 +2171,11 @@ Function .onInit
   StrCpy $charisfilename "CharisSIL-$charisversion"
   StrCpy $chariszipfile "CharisSIL-$charisversion.zip"
   StrCpy $charisurl "https://software.sil.org/downloads/r/charis/$chariszipfile"
-
+  ; currently "https://software.sil.org/downloads/r/charis/Charis-7.000.zip"
+  ; given the churn in this website, it may be better to pull the url from 
+  ; https://api.github.com/repos/silnrsi/font-charis/releases/latest
+  ; under [assets] there are currently three formats, you can use the [browser_download_url] that ends with '.zip'
+  
   StrCpy $filepath $EXEDIR  
   ; Destination directory for temporary installation files (OUTDIR)
   SetOutPath $filepath
