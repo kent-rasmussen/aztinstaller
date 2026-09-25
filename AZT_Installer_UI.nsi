@@ -35,13 +35,16 @@
   !define INSTALLERNAME "AZT_Installer"  ; original name
 
   !define WAITTIME 5000  ; Milliseconds to wait for system calls and retries
+  ; Python minors to try, from $pythonminor up, before walking back down its releases.
+  ; 1 = never move to a newer minor (A-Z+T's requirements don't install on 3.14 yet)
+  !define PYTHONMINORS 1
 
 ;--------------------------------
 ; Global variables    (Ref: See "Function .onInit" for initialization of values)
 
+  Var /GLOBAL pythonminor
   Var /GLOBAL pythonversion
   Var /GLOBAL pythonfilename
-  Var /GLOBAL pythonsize
   Var /GLOBAL pythonurl
   Var /GLOBAL pythonPath
   Var /GLOBAL pythonExe
@@ -182,125 +185,30 @@ Section "Python" pythonId
   Call logMessage
 
   StrCpy $downloadName "python"
-  Var /GLOBAL tempString
 
-  ; Check if desired or later version is already installed
-  StrCpy $desiredVersion $pythonVersion
-  Call checkVersion  
-  Pop $0 ; get exit code
-  ${If} $0 == "0"
-    Pop $1 ; get version
-    StrCpy $tempString $1
-    StrCpy $logstring "$downloadName is already installed, version is <$tempString>, skipping installation."
+  ; Check if python $pythonminor (any patch) is already installed.  Python minors install
+  ; side by side, and the venv is made with this one by full path, so any other python
+  ; on the path (older or newer) is left alone.
+  Call findPythonMinor
+  ${If} $pythonExe != ""
+    StrCpy $logstring "$downloadName $pythonminor is already installed, skipping installation."
     Call logMessage
     goto pythonEnd
   ${EndIf}
 
-  ; If there is an older version, remove it from the path before installing the new one
-  ; This should prevent the first run of azt from picking up the wrong version
-  ${If} $0 == "2"
-    Pop $1 ; get version
-    StrCpy $tempString $1
-    StrCpy $logstring "$downloadName version <$tempString> found.  Removing from path..."
+  ; Which release to install (may move to a newer minor, see resolvePythonVersion)
+  Call resolvePythonVersion
+  ${If} $pythonversion == ""
+    StrCpy $logstring "Unable to find a python $pythonminor installer, online or beside this installer.  Make sure your internet is connected.  Installation aborted."
     Call logMessage
-
-    call getPythonPath
-    StrCpy $logstring "getPythonPath returned pythonExe:  $pythonExe"
+    MessageBox MB_OK|MB_ICONEXCLAMATION $logstring /SD IDOK
+    Abort
+  ${EndIf}
+  Call findPythonMinor
+  ${If} $pythonExe != ""
+    StrCpy $logstring "$downloadName $pythonminor is already installed, skipping installation."
     Call logMessage
-
-    ; if only the name was set, it must be in the path so use "where" to get the real path
-    ${If} $pythonExe == "python"    
-      StrCpy $pathFile "pythonpath.txt"
-      Delete $pathFile
-      ClearErrors
-      ExecWait 'cmd /C where python >$pathFile' $0
-      StrCpy $logstring "'where python' RC = $0"
-      Call logMessage        
-      ${If} $0 == 0
-        ; Read the path from the path file
-        FileOpen $0 $pathFile r
-        FileRead $0 $tempString
-        FileClose $0
-        ${StrTrimNewLines} $pythonExe $tempString
-        StrCpy $logstring "Python path from path file:  $pythonExe"
-        Call logMessage
-      ${EndIf}
-    ${EndIf}
-
-    ${If} $pythonExe != ""
-    ${If} $pythonExe != "py"
-    ${If} $pythonExe != "python"
-        StrCpy $logstring "Old python path found: $pythonExe"
-        Call logMessage
-
-        ; Get the path portion by stripping off the exe file name.  
-        ; It will be used to remove from registry environment path
-        StrLen $R1 $pythonExe ; Get the length of the string
-        StrCpy $R0 -1 ; Initialize the position variable to -1 (not found)        
-        ; Loop through the string from the end to the beginning        
-        ${ForEach} $R3 $R1 0 - 1
-            StrCpy $R4 $pythonExe 1 $R3 ; Get the character at position $R3
-            ;StrCpy $logstring "R4: $R4"
-            ;Call logMessage
-            StrCmp $R4 "\" 0 +3
-            StrCpy $R0 $R3 ; Update the position if backslash is found
-            ${Break}
-        ${Next}
-
-        StrCpy $logstring "Offset: $R0"
-        Call logMessage
-        Var /GLOBAL oldPath
-        StrCpy $oldPath $pythonExe $R0
-        StrCpy $logstring "Old Python path: $oldPath"
-        Call logMessage
-
-        ; Remove the old python path from the system path
-        ; For info on Envar plugin, see https://nsis.sourceforge.io/EnVar_plug-in
-        EnVar::SetHKLM
-        ; Check for path set in HKLM (Local Machine)
-        EnVar::Check "Path" "NULL"
-        Pop $0
-        StrCpy $logstring "EnVar::Read Registry 'Path' RC = $0"
-        Call logMessage
-        ${If} $0 == 0
-          ; Remove from path (with and without terminating backslash)
-          EnVar::DeleteValue "Path" "$oldPath"
-          Pop $0
-          StrCpy $logstring "Registry attempt to remove '$oldPath' from HKLM Path Environment variable.  RC = $0"
-          Call logMessage
-          EnVar::DeleteValue "Path" "$oldPath\"
-          Pop $0
-          StrCpy $logstring "Registry attempt to remove '$oldPath\' from HKLM Path Environment variable.  RC = $0"
-          Call logMessage
-        ${Else}
-          StrCpy $logstring "Unable to update registry HKLM to remove $oldPath."
-          Call logMessage
-        ${EndIf}
-
-        ; Remove the old python path from the current user's path
-        EnVar::SetHKCU
-        ; Check for path set in HKCU (Current User)        
-        EnVar::Check "Path" "NULL"
-        Pop $0
-        StrCpy $logstring "EnVar::Read Registry 'Path' RC = $0"
-        Call logMessage
-        ${If} $0 == 0
-          ; Remove from path (with and without terminating backslash)
-          EnVar::DeleteValue "Path" "$oldPath"
-          Pop $0
-          StrCpy $logstring "Registry attempt to remove '$oldPath' from HKCU Path Environment variable.  RC = $0"
-          Call logMessage
-          EnVar::DeleteValue "Path" "$oldPath\"
-          Pop $0
-          StrCpy $logstring "Registry attempt to remove '$oldPath\' from HKCU Path Environment variable.  RC = $0"
-          Call logMessage
-        ${Else}
-          StrCpy $logstring "Unable to update registry HKCU to remove $oldPath."
-          Call logMessage
-        ${EndIf}      
-    ${EndIf} 
-    ${EndIf}
-    ${EndIf}
+    goto pythonEnd
   ${EndIf}
 
   ;---------------------------------------------------------------
@@ -391,8 +299,11 @@ pythonEnd:
   !insertmacro MUI_HEADER_TEXT_PAGE "${TITLENAME}"  "Locating Python..."
   StrCpy $logstring "${NEWLINE}-----  Get Final Python Path ----- "
   Call logMessage
-  
-  call getPythonPath
+
+  Call findPythonMinor
+  ${If} $pythonExe == ""
+    call getPythonPath
+  ${EndIf}
   ${If} $pythonExe == ""
     StrCpy $logstring "Unable to find python.  You may need to run this installer again to complete the full installation."
     Call logMessage
@@ -1969,6 +1880,151 @@ skipPy:
 FunctionEnd
 
 ;-----------------------------------------------------------------
+; findPythonMinor: Function sets $pythonExe to the full path of an installed
+;                  python $pythonminor (any patch), from the registry entries every
+;                  python.org install writes (PEP 514), or to "" if there is none.
+;                  Works right after installing, when python isn't on the path yet.
+Function findPythonMinor
+  StrCpy $pythonExe ""
+  SetRegView 64
+  ReadRegStr $pythonExe HKCU "Software\Python\PythonCore\$pythonminor\InstallPath" "ExecutablePath"
+  ${If} $pythonExe == ""
+    ReadRegStr $pythonExe HKLM "Software\Python\PythonCore\$pythonminor\InstallPath" "ExecutablePath"
+  ${EndIf}
+  SetRegView lastused
+  ClearErrors
+  ${If} $pythonExe != ""
+  ${AndIfNot} ${FileExists} "$pythonExe"
+    StrCpy $pythonExe ""
+  ${EndIf}
+  StrCpy $logstring "Python $pythonminor from registry: <$pythonExe>"
+  Call logMessage
+FunctionEnd
+
+;-----------------------------------------------------------------
+; resolvePythonVersion: Function sets $pythonversion, $pythonfilename and $pythonurl
+;     to the newest python $pythonminor release with a 64-bit Windows installer.
+;     A minor that gets security fixes only has no installer for its latest release;
+;     then, if PYTHONMINORS allows, the next minor up is tried (and $pythonminor
+;     changed to it).  If none has
+;     an installer, walk back down the first minor's releases to the newest that has
+;     one.  Offline, use a python $pythonminor installer already beside this one.
+;     $pythonversion is "" if nothing is found.
+Function resolvePythonVersion
+  Var /GLOBAL firstMinor
+  Var /GLOBAL firstLatest
+  Var /GLOBAL latestVersion
+  StrCpy $firstMinor $pythonminor
+  StrCpy $firstLatest ""
+
+  ${For} $R5 1 ${PYTHONMINORS}
+    Call readLatestPythonPage
+    ${If} $R5 == 1
+      StrCpy $firstLatest $latestVersion
+    ${EndIf}
+    ${If} $pythonversion != ""
+    ${OrIf} $latestVersion == ""  ; no such release (or offline)
+    ${OrIf} $R5 == ${PYTHONMINORS}
+      ${Break}
+    ${EndIf}
+    ; Security fixes only: try the next minor up
+    StrCpy $R0 $pythonminor 2     ; major and dot, e.g. "3."
+    StrCpy $R1 $pythonminor "" 2  ; minor number, e.g. "13"
+    IntOp $R1 $R1 + 1
+    StrCpy $pythonminor "$R0$R1"
+    StrCpy $logstring "No Windows installer for python $latestVersion; trying python $pythonminor"
+    Call logMessage
+  ${Next}
+
+  ${If} $pythonversion == ""
+    StrCpy $pythonminor $firstMinor
+  ${EndIf}
+
+  ; Walk back down the patches of the first minor
+  ${If} $pythonversion == ""
+  ${AndIf} $firstLatest != ""
+    StrLen $R0 "$pythonminor."
+    StrCpy $R1 $firstLatest "" $R0  ; patch number
+    ${DoWhile} $R1 >= 0
+      StrCpy $R2 "$pythonminor.$R1"
+      inetc::head /silent "https://www.python.org/ftp/python/$R2/python-$R2-amd64.exe" "python_head.txt" /end
+      Pop $R3
+      StrCpy $logstring "python-$R2-amd64.exe on python.org: $R3"
+      Call logMessage
+      ${If} $R3 == "OK"
+        StrCpy $pythonversion $R2
+        ${Break}
+      ${EndIf}
+      IntOp $R1 $R1 - 1
+    ${Loop}
+  ${EndIf}
+
+  ; Offline: an installer already beside this one, e.g. python-3.13.15-amd64.exe
+  ${If} $pythonversion == ""
+    FindFirst $R0 $R1 "python-$pythonminor.*-amd64.exe"
+    FindClose $R0
+    ${If} $R1 != ""
+      StrCpy $pythonversion $R1 -10 7  ; strip "python-" and "-amd64.exe"
+      StrCpy $logstring "Using python installer found beside this one: $R1"
+      Call logMessage
+    ${EndIf}
+  ${EndIf}
+
+  ${If} $pythonversion != ""
+    StrCpy $pythonfilename "python-$pythonversion-amd64.exe"
+    StrCpy $pythonurl "https://www.python.org/ftp/python/$pythonversion/$pythonfilename"
+    StrCpy $logstring "Python release to install: $pythonversion"
+    Call logMessage
+  ${EndIf}
+FunctionEnd
+
+;-----------------------------------------------------------------
+; readLatestPythonPage: Function reads python.org's latest-release page for $pythonminor.
+;     Sets $latestVersion to the release it is for ("" if none, or offline), and
+;     $pythonversion to the same only if the page links its 64-bit Windows installer.
+Function readLatestPythonPage
+  StrCpy $latestVersion ""
+  StrCpy $pythonversion ""
+  Delete "python_latest.html"
+  inetc::get /silent "https://www.python.org/downloads/latest/python$pythonminor/" "python_latest.html" /end
+  Pop $R0
+  StrCpy $logstring "python.org latest python$pythonminor page: $R0"
+  Call logMessage
+  ${If} $R0 != "OK"
+    Return
+  ${EndIf}
+
+  FileOpen $R1 "python_latest.html" r
+  ${Do}
+    ClearErrors
+    FileRead $R1 $R2
+    ${If} ${Errors}
+      ${Break}
+    ${EndIf}
+    ; Title is "Python Release Python 3.13.15 | Python.org"
+    ${If} $latestVersion == ""
+      ${StrStr} $R3 $R2 "Release Python $pythonminor."
+      ${If} $R3 != ""
+        StrCpy $R3 $R3 "" 15  ; strip "Release Python "
+        ${StrLoc} $R4 $R3 " " ">"
+        StrCpy $latestVersion $R3 $R4
+      ${EndIf}
+    ${EndIf}
+    ${If} $latestVersion != ""
+      ${StrStr} $R3 $R2 "/python-$latestVersion-amd64.exe"
+      ${If} $R3 != ""
+        StrCpy $pythonversion $latestVersion
+        ${Break}
+      ${EndIf}
+    ${EndIf}
+  ${Loop}
+  FileClose $R1
+  ClearErrors
+  StrCpy $logstring "Latest python $pythonminor release: <$latestVersion>; with Windows installer: <$pythonversion>"
+  Call logMessage
+FunctionEnd
+
+;-----------------------------------------------------------------
 ; getGitPath: Function searches for git executable.
 ;             If not found, runs a separate windows shell 
 ;             to pull the path from the environment variable
@@ -2198,6 +2254,8 @@ Function .onInstSuccess
     Delete "gitpath.txt"
     Delete "getpythonpath.cmd"
     Delete "pythonpath.txt"
+    Delete "python_latest.html"
+    Delete "python_head.txt"
     
     ClearErrors
     StrCpy $logstring  "ExecShell open $pythonExe $aztfilename SW_SHOW"
@@ -2233,10 +2291,9 @@ Function .onInit
 
   # Define paths
 
-  StrCpy $pythonversion "3.13.7"
-  StrCpy $pythonfilename "python-$pythonversion-amd64.exe"
-  StrCpy $pythonsize "^(27.47348 Megabyte^(s^); 28808040 bytes^)"
-  StrCpy $pythonurl "https://www.python.org/ftp/python/$pythonversion/$pythonfilename"
+  ; Only the python minor is named here; the release is found at install time
+  ; (see resolvePythonVersion)
+  StrCpy $pythonminor "3.13"
 
   StrCpy $gitversion "2.51.2"
   StrCpy $gitfilename "Git-$gitversion-64-bit.exe"

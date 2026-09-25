@@ -87,13 +87,19 @@ naive shallowing breaks a feature:
    it is the rollout mechanism for existing installs.
    - The torch index worry is RESOLVED: `requirements.txt` carries its own
      `--extra-index-url https://download.pytorch.org/whl/cpu` line (checked 2026-09-24).
-   - **Venv location must match what `ensure_venv()` looks for** (sister `../env`
-     preferred, else child `env/`) — otherwise the app builds a second venv on first run.
-     Pick one with the azt item; the suite-root layout from item 1 suggests `../env`.
-   - Open cross-repo choice: NSIS runs its own `pip -r` + writes the stamp, OR calls a
-     shared azt entry point (`rework_install_procedure.md` proposes
-     `python -m utilities.py_modules --install`). The entry point is azt work that does
-     not exist yet — decide with the azt item, don't build it from here.
+   - **Venv location: `<azt>\env`** — settled by Plans E (it is what `ensure_venv()`
+     itself creates; `..\env` would land loose on the Desktop for in-place updates).
+   - **Entry point: settled by Plans E** — the exe runs `env\Scripts\python.exe -c "import
+     utilities.py_modules"`, i.e. azt's IMPORT-TIME bootstrap (`ensure_venv` →
+     `sync_requirements` → `ensure_sister_repos`). That makes those import side effects a
+     cross-repo CONTRACT: an azt edit that moves them behind a `main()` or a `--install`
+     switch (as `rework_install_procedure.md` proposes) silently turns the exe's install
+     step into a no-op. The azt side must record this (see "Alignment check" below).
+   - **Success test must compare the stamp's CONTENT, not its existence** (alignment check
+     2026-09-25). `sync_requirements()` never deletes an old stamp on failure. On an
+     in-place update of `$DESKTOP\azt` (Plans A) the old `env\azt_requirements.stamp` is
+     already there, so "stamp exists" reports success even when the new requirements
+     failed. Compare it to sha256(requirements.txt), lowercase hex, as Plans E describes.
    - Must run as the USER, not elevated — see item 7.
    - **RE-CONFIRMED FOR THE EXE, Kent 2026-09-25: BOTH, in that order.** The exe does the
      full install upfront. azt's first-run check (`ensure_venv` + `sync_requirements`)
@@ -139,7 +145,8 @@ naive shallowing breaks a feature:
    `update_install_non-windows-specific.md` "The python versions"; floor/ceiling in
    `azt/docs/adr/0005-python-version-floor-and-ceiling.md`). The `.nsi` hardcodes
    `pythonversion "3.13.7"` (line ~2143). Keep the minor deliberate (3.13 is inside the
-   ADR range; 3.14 is excluded by torch 2.7.1), but derive the latest patch from
+   ADR range; 3.14 is excluded today — per azt 2026-09-25 mainly by **kivy having no cp314
+   wheels on any platform**, plus `torch==2.7.1` having none), but derive the latest patch from
    python.org's `ftp/python/` listing, with the pinned URL as offline fallback — same
    shape as the Mac script. NB: the azt item's research table says "Windows exe 3.12.4";
    that number is the dead `.bat`, not this exe. The exe is 3.13.x.
@@ -161,9 +168,9 @@ naive shallowing breaks a feature:
    DIFFERENT admin account), `$DESKTOP`/`$LOCALAPPDATA` resolve to the ADMIN's profile, so
    the clone lands where the user never sees it. azt itself needs no admin after install
    (no elevation calls anywhere in azt; paths derive from `__file__`; self-update is
-   `git pull` in the install dir). Fix shape: drop to user level (the dead
-   `.bat` used `runas /trustlevel:0x20000`) for clone, pip and first launch; keep admin
-   only for python/git/font/HKLM steps. A per-user install dir (item 3) makes this easier.
+   `git pull` in the install dir). Fix shape: **superseded by Plans H, "Elevation shape —
+   DECIDED 2026-09-25: atomic"** (user-level installer, one elevated child for the
+   machine-wide steps). The `runas /trustlevel` stopgap is no longer the plan.
 8. **Shallow clone of the source is still NOT done here** (line ~735 is a plain
    `git clone`). Plain `--depth 1` suffices now (see the UPDATE in SHALLOW CLONES above);
    `set-branches --add origin main` + `<testversionname>` then `git fetch --depth 1` is
@@ -181,9 +188,10 @@ naive shallowing breaks a feature:
    one pinned URL as fallback. The app accepts either family name.
 10. **The Transcriber shortcut points at a file that doesn't exist.**
     `transcriberfilename = $INSTDIR\transcriber.py`; the module is
-    `frontend/transcriber.py` and is not currently runnable standalone
-    (`azt/agenda/transcriber_standalone.md`). Drop the shortcut until that item lands,
-    rather than shipping a dead link.
+    `frontend/transcriber.py`. ~~Not runnable standalone; drop the shortcut~~ — **WRONG,
+    corrected by Kent 2026-09-25:** `python -m frontend.transcriber` works. So keep the
+    shortcut and retarget it (Plans D). `azt/agenda/transcriber_standalone.md` may
+    therefore be stale too.
 11. **Webview: install NOTHING for it** (azt decision 2026-09-24:
     `requirements-webview.txt` is not an install target on any platform; the app
     installs the right subset when `--webview` is asked for). Likewise no WebView2
@@ -203,11 +211,11 @@ Asked: does anything on this list overlap work already going on in azt? Answer, 
 | Here | In azt | Status | Who does what |
 |---|---|---|---|
 | 1 multi-repo | `sister_repos.ensure_all()` | built | azt clones; exe only triggers it at install time |
-| 2 requirements | `update_install_non-windows-specific.md` | decided, Mac+Linux done | exe implements the Windows copy of the 3-piece contract |
-| 6 python ver | ADR 0005 + same item | decided | exe resolves patch; azt names the minor |
+| 2 requirements | `update_install_non-windows-specific.md` | decided, Mac+Linux done; exe PR1 drafted | exe calls azt's import-time bootstrap (Plans E) — a contract azt must keep |
+| 6 python ver | ADR 0005 + same item | **CONFLICT — see Alignment check** | azt names the minor; exe resolves the patch |
 | 8 shallow | `rework_install_procedure.md`, `azt/CLAUDE.md` | decided, exe not done | exe |
 | 9 Charis | Mac script's GitHub-API route | built for Mac | exe ports it |
-| 10 Transcriber | `transcriber_standalone.md` | open | exe drops shortcut; azt owns revival |
+| 10 Transcriber | `transcriber_standalone.md` | runs as `-m frontend.transcriber` (Kent) | exe retargets shortcut (Plans D) |
 | 11 webview | `webview_requested_but_absent.md` | done | nothing for exe |
 | — | `py_modules` POSIX `os.execv` relaunch fix | open in azt | **does not touch the exe**; its Windows side is untouched deliberately |
 
@@ -225,6 +233,47 @@ the Charis family actually registered (item 9).
 together with azt, because `ensure_venv()`'s sister-`../env` lookup and `sister_repos`'
 sibling layout already assume a suite root. Decide the layout first; the rest of this list
 is exe-only work that can then proceed without touching azt.
+
+### Alignment check 2026-09-25 (both repos' agenda re-read against each other)
+
+**1. CONFLICT: python minor after 2026-10-01.** The exe's PR2 rule (Research, "bump the
+MINOR, don't walk back"; "no python version ceiling") moves to 3.14 as soon as
+`downloads/latest/python3.13/` stops linking an exe. That happens when 3.13 goes
+security-only on 2026-10-01. azt says on the same day that 3.14 is **unavailable**, because
+kivy has no cp314 wheels (and torch 2.7.1 has none either), and names 3.13.15 as the target.
+So once that lands, every fresh install would get 3.14, and its upfront `pip -r` would
+fail. The two readings fit only if "no ceiling" means *no ceiling by policy*, while
+what actually installs still sets a limit in practice. Proposed reconciliation for Kent: the exe does not choose
+the minor by itself. It takes the minor azt names (a single value, ideally read from azt, e.g. a
+raw file in the azt repo, with the `.nsi` variable as fallback). When the minor has no
+newer installer, it falls back to the newest patch of THAT minor that has one (the FTP
+walk). It does not bump to the next minor.
+
+**2. UNVERIFIED FACT, stated two ways.** azt: *"no installer less than 3.13.15"*, and
+"python.org withdraws installers for versions no longer in bugfix maintenance". The exe's
+research: 3.12.10's `-amd64.exe` is still on FTP although 3.12 is security-only. Both
+can't be true. One hand check settles it:
+`https://www.python.org/ftp/python/3.13.7/python-3.13.7-amd64.exe`. If it downloads, the
+"current outage" in the azt item is wrong, and the FTP walk-back in point 1 is safe.
+
+**3. azt-side lines that are now stale** (NOT edited from here; for whoever works azt):
+- `update_install_non-windows-specific.md`: "Windows still defers, by way of the exe
+  running `main.py`". The exe PR1 is drafted to install upfront (untested).
+- Same file, plan 6 and "CORRECTION 2026-09-23": "the exe clones this repo and runs
+  `main.py`". Now the exe imports `utilities.py_modules` as its installer. So
+  `py_modules`' **import-time side effects are a contract with the exe**, and that belongs
+  on the Windows non-regression checklist. `rework_install_procedure.md`'s proposed
+  `python -m utilities.py_modules --install` must keep the import path working, or
+  coordinate a switch of the exe to it.
+- Same file, "Windows caveat": calls the `runas /trustlevel` `.bat` "current". The exe
+  has decided the atomic shape instead (Plans H). The principle (pip as the user) still holds.
+- Same file, "a python move is ... administrator rights on Windows". Not true once the
+  exe installs python per-user (`InstallAllUsers=0`, Plans H).
+- `transcriber_standalone.md`: may be stale given `-m frontend.transcriber` works.
+
+**Aligned, no action:** shallow clones (plain `--depth 1`), sister repos (azt's),
+webview (nothing), venv at `<azt>\env`, first-run check kept as backstop, Charis via
+GitHub API, `safe.directory` (azt's `mark_safe()`).
 
 ## Research 2026-08-25 — desktop vs `%LOCALAPPDATA%\Programs` for the program repos
 
@@ -320,7 +369,17 @@ Sources: [Git/OneDrive corruption reports](https://techcommunity.microsoft.com/d
   Known limits for the PR description: newly installed Git isn't on the parent's PATH
   for the bootstrap's sister clones (optional; azt retries at start); `/S` silent runs
   skip the components page, so the elevated copy wouldn't get optional selections;
-  HKLM old-python-path removal in the Python section now fails (logged) as the user.
+  HKLM old-python-path removal in the Python section now fails (logged) as the user
+  (removed entirely in PR2).
+- PR2 DRAFTED 2026-09-25 on top of PR1 (NOT compiled, NOT tested). **No bump for now**
+  (Kent 2026-09-25, resolving Alignment check #1): `!define PYTHONMINORS 1`; set >1 once
+  azt's requirements install on 3.14. Alignment #2 settled: Kent confirmed 3.12.10's
+  installer is still on FTP → walk-back is safe. Shape: `findPythonMinor` (PEP 514
+  registry, HKCU then HKLM, 64-bit view) → skip install if present; else
+  `resolvePythonVersion` (latest page → walk back with `inetc::head` → installer beside
+  the exe) → install → `findPythonMinor` again (old `getPythonPath` kept as fallback).
+  Old "≥ desired + remove other pythons from PATH" block deleted. Test: minor 3.12 must
+  resolve to 3.12.10.
 - F. Shortcut: keep current file-association launch (Kent 2026-09-25: no), but leave a
   comment with the `pythonw.exe main.py` form — expected to go there eventually.
 - G. (list 7) De-elevate venv/pip/first launch — YES (Kent 2026-09-25).
