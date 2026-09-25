@@ -77,10 +77,12 @@
   var /GLOBAL aztRepoName
   var /GLOBAL aztRepoURL
   var /GLOBAL aztfilename
-  var /GLOBAL transcriberfilename
 
   ; Use 0 for current user and 1 for admin user
   Var /GLOBAL withadmin
+  ; "1" in the elevated copy started by runAdminSteps (/ADMINSTEPS)
+  Var /GLOBAL adminsteps
+  Var /GLOBAL adminArgs
   var /GLOBAL logfile
   Var /GLOBAL log0
   var /GLOBAL logstring
@@ -102,11 +104,13 @@
   OutFile "${INSTALLERNAME}.exe"
   Unicode True
 
-  ;Request application privileges for Windows 
-  RequestExecutionLevel admin
-  
-  ;Default installation folder  (sets INSTDIR)
-  InstallDir "$DESKTOP\azt"
+  ;Request application privileges for Windows
+  ;Run as the user; machine-wide steps run in an elevated copy (see runAdminSteps)
+  RequestExecutionLevel user
+
+  ;Default installation folder  (sets INSTDIR; an existing $DESKTOP\azt is kept, see .onInit)
+  ;The parent folder is the suite folder, where A-Z+T puts its sister repositories
+  InstallDir "$LOCALAPPDATA\Programs\AZT\azt"
 
 ;--------------------------------
 ;Descriptions - if setting up multiple languages
@@ -137,6 +141,8 @@
   ; Disable MUI_PAGE_COMPONENTS if you do not want the user to select which sections to install
   ; Every "Section" will appear on the list.   
   ; Required Sections are checked and set to Read/Only in .onInit using SectionSetFlags
+  !define MUI_PAGE_CUSTOMFUNCTION_PRE skipComponentsIfAdmin
+  !define MUI_PAGE_CUSTOMFUNCTION_LEAVE componentsLeave
   !insertmacro MUI_PAGE_COMPONENTS
   
   ; Enable MUI_PAGE_DIRECTORY to permit user to change the installationi target directory
@@ -379,56 +385,6 @@ Section "Python" pythonId
     StrCpy $logstring "Python installed successfully."
     Call logMessage
   ${EndIf}
-  
-
-;----------------------------------------------------------------
-; Enable readLongPathsEnabled in Registry for use with Python
-
-!insertmacro MUI_HEADER_TEXT_PAGE "${TITLENAME}"  "Updating Registry LongPathsEnabled"
-StrCpy $logstring "${NEWLINE}-----  Registry LongPathsEnabled Test/Set ----- "
-Call logMessage
-; Ensure LongPathsEnabled is already set in the Windows Registry else set it now  
-; Cases 1 - 5 map to HKLM,HKCU,HKCR,HKU,HKCC (no easy way to do a for with strings)
-StrCpy $found "false"
-StrCpy $R2 HKLM
-${For} $R1 1 5
-  ${If} $found == "false"
-    Call readLongPathsEnabled
-    ifErrors loopRegistryNext
-    StrCpy $logstring "Registry LongPathsEnabled found: $R0"
-    Call logMessage
-    ${If} $R0 == 1
-      StrCpy $logstring "LongPathsEnabled registry already set for $R2."
-      Call logMessage
-      StrCpy $found "true"
-    ${Else} 
-      ; Entry found but needs to be changed to 1
-      StrCpy $logstring "LongPathsEnabled registry found for $R2, updating to 1."
-      Call logMessage
-      Call writeLongPathsEnabled
-      ifErrors errorExitLongPaths
-      StrCpy $found "true"
-    ${EndIf}
-  ${endIf}
-loopRegistryNext:
-  ClearErrors
-${Next}
-
-${If} $found == "false"  
-  ; Not found so try to set in HKLM
-  StrCpy $R2 HKLM
-  StrCpy $R1 "1"
-  Call addLongPathsEnabled
-  ifErrors errorExitLongPaths pythonEnd
-  
-errorExitLongPaths:
-  ClearErrors
-  StrCpy $logstring "ERROR: Error setting Registry LongPathsEnabled"
-  Call logMessage
-  ; Does this need to abort or can it continue?
-  ;MessageBox MB_OK $logstring
-  ;Abort
-${EndIf}  
 
 ;--------------------------------
 pythonEnd:
@@ -457,6 +413,13 @@ Section "Git" gitId
   Call logMessage
 
   StrCpy $downloadName "git"
+
+  ; As the user: run all the machine-wide steps (this one included) in one elevated copy
+  ${If} $adminsteps != "1"
+    Call runAdminSteps
+    goto gitEnd
+  ${EndIf}
+  SetAutoClose true  ; the elevated copy closes itself when done
 
   ; Check if desired or later Git is already installed
   StrCpy $desiredVersion $gitVersion
@@ -534,8 +497,64 @@ gitEnd:
   ${Else}
     StrCpy $logstring "Using Git path: $gitExe"
   ${EndIf}
-  
 
+
+SectionEnd
+
+;***************************************************************************************
+; Hidden section, run only in the elevated copy (HKLM needs admin)
+Section "-LongPaths" longPathsId
+
+;----------------------------------------------------------------
+; Enable readLongPathsEnabled in Registry for use with Python
+
+!insertmacro MUI_HEADER_TEXT_PAGE "${TITLENAME}"  "Updating Registry LongPathsEnabled"
+StrCpy $logstring "${NEWLINE}-----  Registry LongPathsEnabled Test/Set ----- "
+Call logMessage
+; Ensure LongPathsEnabled is already set in the Windows Registry else set it now
+; Cases 1 - 5 map to HKLM,HKCU,HKCR,HKU,HKCC (no easy way to do a for with strings)
+StrCpy $found "false"
+StrCpy $R2 HKLM
+${For} $R1 1 5
+  ${If} $found == "false"
+    Call readLongPathsEnabled
+    ifErrors loopRegistryNext
+    StrCpy $logstring "Registry LongPathsEnabled found: $R0"
+    Call logMessage
+    ${If} $R0 == 1
+      StrCpy $logstring "LongPathsEnabled registry already set for $R2."
+      Call logMessage
+      StrCpy $found "true"
+    ${Else}
+      ; Entry found but needs to be changed to 1
+      StrCpy $logstring "LongPathsEnabled registry found for $R2, updating to 1."
+      Call logMessage
+      Call writeLongPathsEnabled
+      ifErrors errorExitLongPaths
+      StrCpy $found "true"
+    ${EndIf}
+  ${endIf}
+loopRegistryNext:
+  ClearErrors
+${Next}
+
+${If} $found == "false"
+  ; Not found so try to set in HKLM
+  StrCpy $R2 HKLM
+  StrCpy $R1 "1"
+  Call addLongPathsEnabled
+  ifErrors errorExitLongPaths longPathsEnd
+
+errorExitLongPaths:
+  ClearErrors
+  StrCpy $logstring "ERROR: Error setting Registry LongPathsEnabled"
+  Call logMessage
+  ; Does this need to abort or can it continue?
+  ;MessageBox MB_OK $logstring
+  ;Abort
+${EndIf}
+
+longPathsEnd:
 SectionEnd
 
 
@@ -659,47 +678,17 @@ StrCpy $logstring "git config path: $newPathString"
 
 ClearErrors
 Var /GLOBAL cmd
-; Set the safe.directory in both --system and --global, using both "\" and "/" paths to be safe
+; Set the safe.directory in --global (--system needs admin), using both "\" and "/" paths to be safe
 ; Developer Notes:  To validate in a windows command prompt, use:
-;                     git config --system --get-all safe.directory
-;                   To clear them: 
-;                     git config --system --unset-all safe.directory
+;                     git config --global --get-all safe.directory
+;                   To clear them:
+;                     git config --global --unset-all safe.directory
 
 ; Define the path to the log file
 StrCpy $tempLogFile "git_error.log"
 ${If} $gitExe == ""  ; Should have been set during git install, else assume path is in env.
   StrCpy $logstring "gitExe variable is not set - using 'git'"
   StrCpy $gitExe "git"
-${EndIf}
-
-StrCpy $cmd `$\"$gitExe$\" config --system --add safe.directory $\"$INSTDIR$\"`
-StrCpy $logstring "Executing $cmd ..."
-Call logMessage
-ExecWait `cmd /C $\"$cmd$\" 2>$tempLogFile` $0
-StrCpy $logstring "   Return value: $0"
-Call logMessage
-${If} $0 != 0
-  FileOpen $0 $tempLogFile r
-  FileRead $0 $ReturnError
-  FileClose $0
-  StrCpy $logstring "ERROR: Git config error:  $ReturnError"
-  Call logMessage
-  abort
-${EndIf}
-
-StrCpy $cmd `$\"$gitExe$\" config --system --add safe.directory $\"$newPathString$\"`
-StrCpy $logstring "Executing $cmd ..."
-Call logMessage
-ExecWait `cmd /C $\"$cmd$\" 2>$tempLogFile` $0
-StrCpy $logstring "   Return value: $0"
-Call logMessage
-${If} $0 != 0
-  FileOpen $0 $tempLogFile r
-  FileRead $0 $ReturnError
-  FileClose $0
-  StrCpy $logstring "ERROR: Git config error:  $ReturnError"
-  Call logMessage
-  abort
 ${EndIf}
 
 StrCpy $cmd `$\"$gitExe$\" config --global --add safe.directory $\"$INSTDIR$\"`
@@ -732,7 +721,7 @@ ${If} $0 != 0
   abort
 ${EndIf}
 
-StrCpy $cmd `$\"$gitExe$\" clone $azt $\"$INSTDIR$\"`
+StrCpy $cmd `$\"$gitExe$\" clone --depth 1 $azt $\"$INSTDIR$\"`
 StrCpy $logstring "Executing $cmd ..."
 Call logMessage
 ClearErrors
@@ -762,15 +751,52 @@ ${If} $0 != 0
   ${EndIf}
 ${EndIf}
 
- 
-  ;----------------------------------------------------------------  
+
+  ;----------------------------------------------------------------
+  ; Install A-Z+T's python modules now (as the user), so the first run doesn't have to.
+  ; Importing utilities.py_modules from the venv python, in the clone, runs A-Z+T's own
+  ; bootstrap (requirements.txt, sister repositories).  Its exit code is not a success
+  ; signal: env\azt_requirements.stamp is written only when requirements.txt installed
+  ; cleanly.  Without it, A-Z+T retries at first run.
+  !insertmacro MUI_HEADER_TEXT_PAGE "${TITLENAME}" "Installing A-Z+T modules.  This may take several minutes..."
+  Var /GLOBAL venvPython
+  StrCpy $venvPython "$INSTDIR\env\Scripts\python.exe"
+  SetOutPath "$INSTDIR"
+  ${IfNot} ${FileExists} "$venvPython"
+    StrCpy $logstring "Creating virtual environment $INSTDIR\env ..."
+    Call logMessage
+    nsExec::ExecToLog `"$pythonExe" -m venv "$INSTDIR\env"`
+    Pop $0
+    StrCpy $logstring "   Return value: $0"
+    Call logMessage
+  ${EndIf}
+  ${If} ${FileExists} "$venvPython"
+    StrCpy $logstring "Installing A-Z+T modules from $INSTDIR\requirements.txt ..."
+    Call logMessage
+    nsExec::ExecToLog `"$venvPython" -c "import utilities.py_modules"`
+    Pop $0
+    ${If} ${FileExists} "$INSTDIR\env\azt_requirements.stamp"
+      StrCpy $logstring "A-Z+T modules installed."
+    ${Else}
+      StrCpy $logstring "A-Z+T modules not fully installed; A-Z+T will retry when it starts."
+    ${EndIf}
+    Call logMessage
+  ${Else}
+    StrCpy $logstring "Unable to create $INSTDIR\env; A-Z+T will create it when it starts."
+    Call logMessage
+  ${EndIf}
+  SetOutPath "$EXEDIR"
+
+  ;----------------------------------------------------------------
   ; Successful install of AZT, set up shortcuts
   ;
   StrCpy $logstring  "Creating shortcut to AZT..."
   Call logMessage
   ; Create Shortcut
   StrCpy $0 "$DESKTOP\A-Z+T.lnk"   ; The shortcut name
-  StrCpy $1 "$DESKTOP\azt\main.py" ; The target file
+  StrCpy $1 "$aztfilename" ; The target file (opened by the .py file association)
+  ; Possible later form, with no console and no restart into the venv:
+  ;   CreateShortcut "$0" "$INSTDIR\env\Scripts\pythonw.exe" "$\"$aztfilename$\"" "$2" 0
   StrCpy $logstring "Executable : $EXEDIR\$EXEFILE"
   Call logMessage
   StrCpy $2 "$EXEDIR\$EXEFILE"     ; icon file is embedded in installer executable
@@ -788,12 +814,15 @@ ${EndIf}
   StrCpy $logstring  "Creating shortcut to Transcriber tool..."
   Call logMessage
   StrCpy $0 "$DESKTOP\Transcriber.lnk"   ; The shortcut name
-  StrCpy $1 "$transcriberfilename" ; The target file  
+  StrCpy $1 "$venvPython" ; The target file (runs frontend.transcriber as a module)
+  ${IfNot} ${FileExists} "$venvPython"
+    StrCpy $1 "$pythonExe"
+  ${EndIf}
   StrCpy $2 "$EXEDIR\Transcribe-Tone.ico"  ; icon file is embedded in installer executable
   ; Create application shortcut (first in installation dir to have the correct "start in" target)
   SetOutPath "$INSTDIR"
-  CreateShortcut "$0" "$1" "" "$2" 0
-  ; Check for errors 
+  CreateShortcut "$0" "$1" "-m frontend.transcriber" "$2" 0
+  ; Check for errors
   IfErrors 0 +3
   StrCpy $logstring "ERROR: Failed to create shortcut for Transcriber."
   Call logMessage
@@ -1713,7 +1742,7 @@ noDriveChange:
     
   StrCpy $tempLogFile "git_error.log"
   ClearErrors
-  ExecWait 'cmd /C $\"$\"$gitExe$\" pull origin$\" 2>$tempLogFile' $0
+  ExecWait 'cmd /C $\"$\"$gitExe$\" pull --depth 1 origin$\" 2>$tempLogFile' $0
   StrCpy $logstring "   Return value: $0"
   Call logMessage
   ${If} $0 != 0
@@ -2097,8 +2126,64 @@ ${EndIf}
 FunctionEnd
 
 ;-----------------------------------------------------------------
-; .onInstSuccess - Executes at the end of a successful installation 
+; skipComponentsIfAdmin: the elevated copy was already told what to install
+Function skipComponentsIfAdmin
+  ${If} $adminsteps == "1"
+    Abort
+  ${EndIf}
+FunctionEnd
+
+;-----------------------------------------------------------------
+; componentsLeave: machine-wide sections run in the elevated copy (runAdminSteps),
+;                  so pass it the optional ones selected, and don't run them here
+Function componentsLeave
+  StrCpy $adminArgs ""
+  ${If} ${SectionIsSelected} ${xlpId}
+    StrCpy $adminArgs "$adminArgs /XLP"
+  ${EndIf}
+  ${If} ${SectionIsSelected} ${praatId}
+    StrCpy $adminArgs "$adminArgs /PRAAT"
+  ${EndIf}
+  ${If} ${SectionIsSelected} ${mercurialId}
+    StrCpy $adminArgs "$adminArgs /HG"
+  ${EndIf}
+  SectionSetFlags ${charisId} 0
+  SectionSetFlags ${xlpId} 0
+  SectionSetFlags ${praatId} 0
+  SectionSetFlags ${mercurialId} 0
+FunctionEnd
+
+;-----------------------------------------------------------------
+; runAdminSteps: Function runs this installer again, elevated, with /ADMINSTEPS,
+;                to do only the machine-wide steps (Git, Charis, LongPathsEnabled,
+;                and the optional programs selected).  Everything per-user (python,
+;                A-Z+T, its modules, shortcuts) stays in this, the user's, process,
+;                so it goes to the right user even if another account gives admin rights.
+Function runAdminSteps
+  StrCpy $logstring "Running machine-wide steps as administrator: $EXEPATH /ADMINSTEPS$adminArgs"
+  Call logMessage
+  ClearErrors
+  ExecShellWait "runas" "$EXEPATH" "/ADMINSTEPS$adminArgs"
+  ${If} ${Errors}
+    StrCpy $logstring "Administrator steps did not run (permission not given?).  Installation aborted."
+    Call logMessage
+    MessageBox MB_OK|MB_ICONEXCLAMATION $logstring /SD IDOK
+    Abort
+  ${EndIf}
+  StrCpy $logstring "Machine-wide steps finished; details are in ${INSTALLERNAME}_admin.log"
+  Call logMessage
+FunctionEnd
+
+;-----------------------------------------------------------------
+; .onInstSuccess - Executes at the end of a successful installation
 Function .onInstSuccess
+    ${If} $adminsteps == "1"
+      ; Elevated copy: the user's installer continues from here
+      StrCpy $logstring "Machine-wide steps completed successfully."
+      Call logMessage
+      FileClose $log0
+      Return
+    ${EndIf}
     StrCpy $logstring "Installation completed successfully.${NEWLINE}${NEWLINE}A-Z+T will be launched now to finish configuration."
     Call logMessage    
     MessageBox MB_OK $logstring
@@ -2138,7 +2223,15 @@ FunctionEnd
 ;     Use it to initialize features and variables
 Function .onInit
 
-  # Define paths  
+  ; /ADMINSTEPS marks the elevated copy started by runAdminSteps
+  ${GetParameters} $R0
+  ClearErrors
+  ${GetOptions} $R0 "/ADMINSTEPS" $R1
+  ${IfNot} ${Errors}
+    StrCpy $adminsteps "1"
+  ${EndIf}
+
+  # Define paths
 
   StrCpy $pythonversion "3.13.7"
   StrCpy $pythonfilename "python-$pythonversion-amd64.exe"
@@ -2152,8 +2245,11 @@ Function .onInit
 
   StrCpy $aztRepoName "azt.git"
   StrCpy $aztRepoURL "https://github.com/kent-rasmussen/azt.git"
+  ; Existing desktop installs are updated in place; new installs go to InstallDir
+  ${If} ${FileExists} "$DESKTOP\azt\main.py"
+    StrCpy $INSTDIR "$DESKTOP\azt"
+  ${EndIf}
   StrCpy $aztfilename "$INSTDIR\main.py"
-  StrCpy $transcriberfilename "$INSTDIR\transcriber.py"
 
   StrCpy $praatversion "6446"
   StrCpy $praatfilename "praat$praatversion_win-intel64.zip"
@@ -2183,9 +2279,12 @@ Function .onInit
   ; Include icons for setting in shortcuts - must come after SetOutPath is defined
   File "azt.ico"
   File "Transcribe-Tone.ico"
-  
+
   ; Set output installation log file name. (Ref: logMessage function)
-  StrCpy $logfile "${INSTALLERNAME}.log"  
+  StrCpy $logfile "${INSTALLERNAME}.log"
+  ${If} $adminsteps == "1"
+    StrCpy $logfile "${INSTALLERNAME}_admin.log"
+  ${EndIf}
   FileOpen $log0 $logfile w
   ifErrors 0 continue_init
     StrCpy $logstring "Unable to open the installation log file.  Make sure you have write access to the installation directory: $EXEDIR"
@@ -2208,10 +2307,40 @@ Function .onInit
   SectionSetFlags ${aztId} $0
   SectionSetFlags ${charisId} $0
 
+  ${If} $adminsteps == "1"
+    ; Elevated copy: machine-wide sections only, optional ones as passed by runAdminSteps
+    SectionSetFlags ${pythonId} 0
+    SectionSetFlags ${aztId} 0
+    ${GetParameters} $R0
+    ClearErrors
+    ${GetOptions} $R0 "/XLP" $R1
+    ${If} ${Errors}
+      SectionSetFlags ${xlpId} 0
+    ${EndIf}
+    ClearErrors
+    ${GetOptions} $R0 "/PRAAT" $R1
+    ${If} ${Errors}
+      SectionSetFlags ${praatId} 0
+    ${EndIf}
+    ClearErrors
+    ${GetOptions} $R0 "/HG" $R1
+    ${If} ${Errors}
+      SectionSetFlags ${mercurialId} 0
+    ${EndIf}
+  ${Else}
+    SectionSetFlags ${longPathsId} 0
+  ${EndIf}
+
   ; Check if the installer is running with admin rights
   StrCpy $logstring "-----  Starting Installation ----- ${NEWLINE}Installing from $filepath"
   Call logMessage
-  
+
+  ; Only the elevated copy needs admin rights
+  ${If} $adminsteps != "1"
+    StrCpy $withadmin "0"
+    Return
+  ${EndIf}
+
   !insertmacro MUI_HEADER_TEXT_PAGE "${TITLENAME}"  "Test / Set Admin Mode..."
   StrCpy $logstring "${NEWLINE}-----  Test / Set Admin Mode ----- "
   Call logMessage
