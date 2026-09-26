@@ -57,7 +57,6 @@ The script file is `AZT_Installer_UI.nsi`.
   !include FileFunc.nsh
   !include StrFunc.nsh    
   !include WinMessages.nsh
-  !include Locate.nsh
 ```
 
 ### Plugins
@@ -70,9 +69,6 @@ The script file is `AZT_Installer_UI.nsi`.
 
 - [EnVar](https://nsis.sourceforge.io/EnVar_plug-in)
 - [Inetc](https://nsis.sourceforge.io/Inetc_plug-in)
-- [Locate](https://nsis.sourceforge.io/Locate_plugin)  
-    - To install Locate, run install.exe but must also copy locate.dll from Plugins to each of the subdirectories otherwise vscode doesn't find it
-    - Locate macro documentation will be installed to <PROGRMFILES>\NSIS\Docs\Locate\Readme.txt    
 
 
 ### Important

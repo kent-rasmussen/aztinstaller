@@ -380,6 +380,18 @@ Sources: [Git/OneDrive corruption reports](https://techcommunity.microsoft.com/d
   the exe) → install → `findPythonMinor` again (old `getPythonPath` kept as fallback).
   Old "≥ desired + remove other pythons from PATH" block deleted. Test: minor 3.12 must
   resolve to 3.12.10.
+- PR3 DRAFTED 2026-09-26 on top of PR2 (NOT compiled, NOT tested). GitHub API
+  `releases/latest` → `tag_name` (read in overlapping 512-char pieces, since the JSON may
+  exceed NSIS's 1024-char strings) → `Charis-<v>.zip` from the GitHub release; fallback
+  software.sil.org 7.000 URL. Family "Charis" (v7), face = filename minus "Charis-",
+  space before "Italic". Old "Charis SIL" registry entries are left (app accepts both).
+  Assumes the zip's top folder is `Charis-<v>` (SIL's convention; unverified) — logs an
+  ERROR if no .ttf is found there.
+- Locate plugin REMOVED 2026-09-26 (in the same working tree as PR3; commit it as its own
+  change): its zip has no Unicode dll (Kent's build machine, via
+  `agenda/setup_nsis_plugins.ps1`). `LocatePrograms` now = `${FileExists}` on
+  `$searchPath\$searchString`, same inputs and output. Build machine needs only Inetc +
+  EnVar. First build machine found incomplete (no `nsDialogs.nsh`); is NSIS 3.12.
 - F. Shortcut: keep current file-association launch (Kent 2026-09-25: no), but leave a
   comment with the `pythonw.exe main.py` form — expected to go there eventually.
 - G. (list 7) De-elevate venv/pip/first launch — YES (Kent 2026-09-25).

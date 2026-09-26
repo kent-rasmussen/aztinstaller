@@ -6,7 +6,6 @@
   !include FileFunc.nsh
   !include StrFunc.nsh    
   !include WinMessages.nsh  ; For SendMessage
-  !include Locate.nsh
 
 ; Used to reposition the installer window
   !ifndef SPI_GETWORKAREA
@@ -770,8 +769,9 @@ Section "Charis" charisId
   StrCpy $logstring "${NEWLINE}-----  Charis Installer ----- "
   Call logMessage
 
-  StrCpy $downloadName "Charis"   
-  
+  StrCpy $downloadName "Charis"
+  Call resolveCharisVersion
+
   ; Check if Installer file was already downloaded previously
   StrCpy $logstring "$downloadName FindFirst: $chariszipfile"
   FindFirst $0 $1 "$chariszipfile"
@@ -847,6 +847,10 @@ Section "Charis" charisId
   FindFirst $0 $1 "$TTF"
   StrCpy $logstring "  File search: $0 $1"
   Call logMessage
+  ${If} $1 == ""
+    StrCpy $logstring "ERROR: No .ttf files found in $EXEDIR\$charisfilename"
+    Call logMessage
+  ${EndIf}
 
   ${DoWhile} $1 != ""
   
@@ -868,20 +872,24 @@ continueCharis:
     # Remove the .ttf extension to get NOEXT
     StrCpy $NOEXT $TTFFileName -4
     
-    # Remove 'CharisSIL-' from NOEXT to get FACE
+    # Remove 'Charis-' from NOEXT to get FACE (v7 renamed the family from 'Charis SIL')
     ${If} $NOEXT != ""
-        ${StrRep} $FACE $NOEXT "CharisSIL-" ""
+        ${StrRep} $FACE $NOEXT "Charis-" ""
     ${EndIf}
-    
-    # Replace 'BoldItalic' with 'Bold Italic' in FACE to get FACEMOD
-    StrCpy $FACEMOD $FACE
-    ${StrRep} $FACEMOD $FACEMOD "BoldItalic" "Bold Italic"
+
+    # Put a space before 'Italic' in FACE to get FACEMOD (e.g. 'SemiBold Italic'),
+    # but not at the start ('Italic')
+    ${StrRep} $FACEMOD $FACE "Italic" " Italic"
+    StrCpy $R0 $FACEMOD 1
+    ${If} $R0 == " "
+      StrCpy $FACEMOD $FACEMOD "" 1
+    ${EndIf}
     
     StrCpy $logstring "Installing $TTFFileName as $FACEMOD"
     Call logMessage
     
     # Write to the registry
-    WriteRegStr HKLM "SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts" "Charis SIL $FACEMOD (TrueType)" "$TTFFileName"
+    WriteRegStr HKLM "SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts" "Charis $FACEMOD (TrueType)" "$TTFFileName"
     ifErrors 0 continueCharis2
     StrCpy $logstring "Error writing updating registry for font: $FACEMOD"
     Call logMessage
@@ -890,8 +898,8 @@ continueCharis:
 continueCharis2:
     ; Validate and write to log
     ; To validate directly, copy and paste this into windows prompt:
-    ; reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts" /v "Charis SIL*"
-    ReadRegStr $R9 HKLM "SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts" "Charis SIL $FACEMOD (TrueType)"
+    ; reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts" /v "Charis*"
+    ReadRegStr $R9 HKLM "SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts" "Charis $FACEMOD (TrueType)"
     StrCpy $logstring "Registry read for $FACEMOD: $R9"
     Call logMessage
   
@@ -1337,31 +1345,15 @@ Function LocatePrograms
   Pop $searchString
   Pop $searchPath
   StrCpy $logstring "LocatePrograms - searching for file $searchString in $searchPath"
-  Call logMessage 
-  
-  ; Define parameters for locate to search files, directories but not subdirectories
-  StrCpy $R3 `/F=1 /D=1 /G=0 /M=$searchString`  
-  ${locate::Open} $searchPath $R3 $0
-	StrCmp $0 -1 0 locate1
-	StrCpy $logstring "Error getting handle for locate for $searchString"
   Call logMessage
-  goto skiplocate
 
-	locate1:
-	${locate::Find} $0 $1 $2 $3 $4 $5 $6
-	StrCpy $logstring 'locate::Find results: path=$1   -    timestamp=$5'
-	Call logMessage
-
-	${locate::Close} $0
-	${locate::Unload}
-
-  ${If} $1 != ""
-    StrCpy $searchResult $1
+  ; A file or directory directly in $searchPath (not in subdirectories)
+  ${If} ${FileExists} "$searchPath\$searchString"
+    StrCpy $searchResult "$searchPath\$searchString"
     StrCpy $logstring "$searchString found: $searchResult"
-    Call logMessage    
+    Call logMessage
   ${EndIf}
 
-skiplocate:
   Push $searchResult
 
 FunctionEnd
@@ -2025,6 +2017,60 @@ Function readLatestPythonPage
 FunctionEnd
 
 ;-----------------------------------------------------------------
+; resolveCharisVersion: Function asks GitHub for the latest Charis release and, if it
+;     answers, sets $charisversion, $charisfilename, $chariszipfile and $charisurl for it.
+;     Otherwise they keep the values set in .onInit.
+Function resolveCharisVersion
+  Delete "charis_latest.json"
+  inetc::get /silent "https://api.github.com/repos/silnrsi/font-charis/releases/latest" "charis_latest.json" /end
+  Pop $R0
+  StrCpy $logstring "GitHub latest Charis release: $R0"
+  Call logMessage
+  ${If} $R0 != "OK"
+    Return
+  ${EndIf}
+
+  ; Find "tag_name": "v7.000".  The JSON may be one line longer than an NSIS string,
+  ; so read it in pieces, each searched together with the end of the one before.
+  StrCpy $R5 ""  ; version found
+  StrCpy $R6 ""  ; end of the previous piece
+  FileOpen $R1 "charis_latest.json" r
+  ${Do}
+    ClearErrors
+    FileRead $R1 $R2 512
+    ${If} ${Errors}
+      ${Break}
+    ${EndIf}
+    StrCpy $R2 "$R6$R2"
+    StrCpy $R6 $R2 "" -128
+    ${StrStr} $R3 $R2 '"tag_name"'
+    ${If} $R3 != ""
+      StrCpy $R3 $R3 "" 10  ; strip '"tag_name"'
+      ${StrStr} $R3 $R3 '"v'
+      ${If} $R3 != ""
+        StrCpy $R3 $R3 "" 2  ; strip '"v'
+        ${StrLoc} $R4 $R3 '"' ">"
+        ${If} $R4 != ""
+          StrCpy $R5 $R3 $R4
+          ${Break}
+        ${EndIf}
+      ${EndIf}
+    ${EndIf}
+  ${Loop}
+  FileClose $R1
+  ClearErrors
+
+  ${If} $R5 != ""
+    StrCpy $charisversion $R5
+    StrCpy $charisfilename "Charis-$charisversion"
+    StrCpy $chariszipfile "$charisfilename.zip"
+    StrCpy $charisurl "https://github.com/silnrsi/font-charis/releases/download/v$charisversion/$chariszipfile"
+  ${EndIf}
+  StrCpy $logstring "Charis release to install: $charisversion from $charisurl"
+  Call logMessage
+FunctionEnd
+
+;-----------------------------------------------------------------
 ; getGitPath: Function searches for git executable.
 ;             If not found, runs a separate windows shell 
 ;             to pull the path from the environment variable
@@ -2256,6 +2302,7 @@ Function .onInstSuccess
     Delete "pythonpath.txt"
     Delete "python_latest.html"
     Delete "python_head.txt"
+    Delete "charis_latest.json"
     
     ClearErrors
     StrCpy $logstring  "ExecShell open $pythonExe $aztfilename SW_SHOW"
@@ -2320,14 +2367,11 @@ Function .onInit
   StrCpy $hgfilename "Mercurial-$hgversion-x64.exe"
   StrCpy $hgurl "https://www.mercurial-scm.org/release/windows/$hgfilename"
 
+  ; Used only if GitHub can't be asked for the latest release (see resolveCharisVersion)
   StrCpy $charisversion "7.000"
-  StrCpy $charisfilename "CharisSIL-$charisversion"
-  StrCpy $chariszipfile "CharisSIL-$charisversion.zip"
+  StrCpy $charisfilename "Charis-$charisversion"
+  StrCpy $chariszipfile "$charisfilename.zip"
   StrCpy $charisurl "https://software.sil.org/downloads/r/charis/$chariszipfile"
-  ; currently "https://software.sil.org/downloads/r/charis/Charis-7.000.zip"
-  ; given the churn in this website, it may be better to pull the url from 
-  ; https://api.github.com/repos/silnrsi/font-charis/releases/latest
-  ; under [assets] there are currently three formats, you can use the [browser_download_url] that ends with '.zip'
   
   StrCpy $filepath $EXEDIR  
   ; Destination directory for temporary installation files (OUTDIR)
