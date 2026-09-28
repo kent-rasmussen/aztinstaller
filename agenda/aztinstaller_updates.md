@@ -410,6 +410,20 @@ Sources: [Git/OneDrive corruption reports](https://techcommunity.microsoft.com/d
   `agenda/setup_nsis_plugins.ps1` is obsolete (delete).
 - Also fixed in review: first launch passed `$aztfilename` unquoted (breaks on a user
   name with a space, now that INSTDIR is under the profile).
+- AUDIT 2026-09-28 (whole script read; not compiled):
+  - FIXED: venv location now mirrors `ensure_venv()` (sister `..\env` first, else
+    `<azt>\env`) — otherwise an in-place desktop update with `Desktop\env` got a second,
+    unused full venv.
+  - PRE-EXISTING, NOT fixed (decide): (a) USB repo search compares `$1` instead of `$R5`
+    (`${If} $1 == $aztRepoName`), so a USB copy is never found; (b) it uses `wmic`, absent
+    by default on Windows 11 24H2+ (falls through to GitHub, so harmless but dead);
+    (c) `gitPullAZT` runs `ExecWait "$InstDrive"` (executes "C:\" — no-op/error);
+    (d) pinned Git 2.51.2 / Praat 6446 / XLingPaper 3-17-0 / Mercurial 6.0 URLs — not
+    checked, may be stale (Praat's site in particular may host only the current build).
+  - KNOWN LIMITS (unchanged): Git installed this run isn't on the user installer's PATH
+    for the bootstrap's sister clones (azt retries at start); `/S` silent skips the
+    components page; the `getPythonPath` fallback (only if the registry lookup fails
+    after install) still accepts any python ≥ target.
 - F. Shortcut: keep current file-association launch (Kent 2026-09-25: no), but leave a
   comment with the `pythonw.exe main.py` form — expected to go there eventually.
 - G. (list 7) De-elevate venv/pip/first launch — YES (Kent 2026-09-25).

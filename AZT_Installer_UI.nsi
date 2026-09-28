@@ -680,12 +680,19 @@ ${EndIf}
   ; cleanly.  Without it, A-Z+T retries at first run.
   !insertmacro MUI_HEADER_TEXT_PAGE "${TITLENAME}" "Installing A-Z+T modules.  This may take several minutes..."
   Var /GLOBAL venvPython
-  StrCpy $venvPython "$INSTDIR\env\Scripts\python.exe"
+  Var /GLOBAL envDir
+  ; Where A-Z+T's ensure_venv() looks: a sister ..\env first, else <azt>\env
+  ${GetParent} "$INSTDIR" $envDir
+  StrCpy $envDir "$envDir\env"
+  ${IfNot} ${FileExists} "$envDir\Scripts\python.exe"
+    StrCpy $envDir "$INSTDIR\env"
+  ${EndIf}
+  StrCpy $venvPython "$envDir\Scripts\python.exe"
   SetOutPath "$INSTDIR"
   ${IfNot} ${FileExists} "$venvPython"
-    StrCpy $logstring "Creating virtual environment $INSTDIR\env ..."
+    StrCpy $logstring "Creating virtual environment $envDir ..."
     Call logMessage
-    nsExec::ExecToLog `"$pythonExe" -m venv "$INSTDIR\env"`
+    nsExec::ExecToLog `"$pythonExe" -m venv "$envDir"`
     Pop $0
     StrCpy $logstring "   Return value: $0"
     Call logMessage
@@ -695,14 +702,14 @@ ${EndIf}
     Call logMessage
     nsExec::ExecToLog `"$venvPython" -c "import utilities.py_modules"`
     Pop $0
-    ${If} ${FileExists} "$INSTDIR\env\azt_requirements.stamp"
+    ${If} ${FileExists} "$envDir\azt_requirements.stamp"
       StrCpy $logstring "A-Z+T modules installed."
     ${Else}
       StrCpy $logstring "A-Z+T modules not fully installed; A-Z+T will retry when it starts."
     ${EndIf}
     Call logMessage
   ${Else}
-    StrCpy $logstring "Unable to create $INSTDIR\env; A-Z+T will create it when it starts."
+    StrCpy $logstring "Unable to create $envDir; A-Z+T will create it when it starts."
     Call logMessage
   ${EndIf}
   SetOutPath "$EXEDIR"
@@ -716,7 +723,7 @@ ${EndIf}
   StrCpy $0 "$DESKTOP\A-Z+T.lnk"   ; The shortcut name
   StrCpy $1 "$aztfilename" ; The target file (opened by the .py file association)
   ; Possible later form, with no console and no restart into the venv:
-  ;   CreateShortcut "$0" "$INSTDIR\env\Scripts\pythonw.exe" "$\"$aztfilename$\"" "$2" 0
+  ;   CreateShortcut "$0" "$envDir\Scripts\pythonw.exe" "$\"$aztfilename$\"" "$2" 0
   StrCpy $logstring "Executable : $EXEDIR\$EXEFILE"
   Call logMessage
   StrCpy $2 "$EXEDIR\$EXEFILE"     ; icon file is embedded in installer executable
