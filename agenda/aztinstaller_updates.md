@@ -480,8 +480,12 @@ Sources: [Git/OneDrive corruption reports](https://techcommunity.microsoft.com/d
   - DONE: shortcut icons now installed to `%LOCALAPPDATA%\Programs\AZT\icons` (survive
     a Downloads purge; kept out of the git clone). `git_version.txt` /
     `python_version.txt` added to cleanup.
-  - KNOWN LIMITS (unchanged): Git installed this run isn't on the user installer's PATH
-    for the bootstrap's sister clones (azt retries at start); `/S` silent skips the
+  - FIXED 2026-09-28 (Kent saw sister clones fail in the install but work at first
+    run): when Git was installed this run (`$gitExe` is a full path), the bootstrap and
+    the finish-page launch run as `cmd /S /C "set "PATH=<git dir>;%PATH%" && …"` —
+    cmd expands %PATH%, so no NSIS string holds the whole PATH. Line endings: upstream
+    `.nsi` is LF, README CRLF (checked with `git ls-files --eol` / `grep -c $'\r$'`).
+  - KNOWN LIMITS (unchanged): `/S` silent skips the
     components page; the `getPythonPath` fallback (only if the registry lookup fails
     after install) still accepts any python ≥ target.
 - F. Shortcut: keep current file-association launch (Kent 2026-09-25: no), but leave a

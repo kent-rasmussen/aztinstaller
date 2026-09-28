@@ -706,10 +706,19 @@ ${EndIf}
     StrCpy $logstring "   Return value: $0"
     Call logMessage
   ${EndIf}
+  ; Git installed in this run isn't on this installer's PATH yet, so add its folder for
+  ; A-Z+T's bootstrap (which clones its sister repositories) and for the launch at the
+  ; end.  cmd expands %PATH% itself, so no NSIS string has to hold the whole PATH.
+  Var /GLOBAL pathPrefix
+  StrCpy $pathPrefix ""
+  ${If} $gitExe != "git"
+    ${GetParent} "$gitExe" $R0
+    StrCpy $pathPrefix `set "PATH=$R0;%PATH%" && `
+  ${EndIf}
   ${If} ${FileExists} "$venvPython"
     StrCpy $logstring "Installing A-Z+T modules from $INSTDIR\requirements.txt ..."
     Call logMessage
-    nsExec::ExecToLog `"$venvPython" -c "import utilities.py_modules"`
+    nsExec::ExecToLog `cmd /S /C "$pathPrefix"$venvPython" -c "import utilities.py_modules""`
     Pop $0
     ; The stamp must match the sha256 of requirements.txt (lowercase hex)
     StrCpy $2 ""
@@ -2595,9 +2604,14 @@ FunctionEnd
 ; launchAZT: Function runs A-Z+T, if its box on the finish page is left checked.
 ;            Its first run finishes its own setup (and retries anything that failed).
 Function launchAZT
-  StrCpy $logstring  "ExecShell open $pythonExe $aztfilename SW_SHOW"
+  StrCpy $logstring  "Launching: $pathPrefix$pythonExe $aztfilename"
   Call logMessage
-  ExecShell "open" "$pythonExe" "$\"$aztfilename$\"" SW_SHOW
+  ${If} $pathPrefix == ""
+    ExecShell "open" "$pythonExe" "$\"$aztfilename$\"" SW_SHOW
+  ${Else}
+    ; With Git's folder on PATH (see the AZT section)
+    Exec `cmd /S /C "$pathPrefix"$pythonExe" "$aztfilename""`
+  ${EndIf}
 FunctionEnd
 
 ;-----------------------------------------------------------------
