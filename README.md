@@ -19,6 +19,7 @@ This installer will install the following:
 - Windows 10 (version 1803 or later, for its built-in `curl.exe`) or 11 
 - Administrator rights for the machine-wide steps (the user's own, or an administrator's password at the prompt)
 - Write access to the folder where the installer executable is located
+- Disable Virus Protection and other security blockers to ensure all executables are permitted to complete.
 
 ### To install
 
@@ -47,6 +48,10 @@ The AZT installer was created using [NSIS version 3.10](https://nsis.sourceforge
 
 
 The script file is `AZT_Installer_UI.nsi`.
+
+Compile the .nsi file to generate the AZT_Installer.exe using VS Code NSIS extension.
+View->Command Palette->NSIS: Save and Compile Script
+Or keyboard shortcut CTRL+SHIFT+B
 
 ### Dependencies
 
