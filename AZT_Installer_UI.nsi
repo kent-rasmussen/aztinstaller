@@ -19,7 +19,16 @@
   ${StrStr} 
   ${StrRep}
   ${StrLoc}
-  ${StrTrimNewLines}  
+  ${StrTrimNewLines}
+
+; ${Download} "url" "file": download with Windows' own curl.exe (Windows 10 1803+),
+; so no download plugin is needed.  Pushes "OK", or an error message.
+  !macro _Download url file
+    StrCpy $dlUrl "${url}"
+    StrCpy $dlFile "${file}"
+    Call downloadFile
+  !macroend
+  !define Download "!insertmacro _Download"
 
 
 ; Show all the DetailsPrint to the user while installation is in progress
@@ -95,6 +104,8 @@
   Var /Global cmdFile
   Var /Global pathFile
   Var /GLOBAL desiredVersion
+  Var /GLOBAL dlUrl
+  Var /GLOBAL dlFile
   
 
 ;------------------------------------------------------------------------------
@@ -232,8 +243,7 @@ Section "Python" pythonId
     StrCpy $logstring "Downloading Python from $pythonurl"
     Call logMessage
 
-    ; For inetc plugin ref: https://nsis.sourceforge.io/Inetc_plug-in
-    inetc::get "$pythonurl" "$pythonfilename" /end
+    ${Download} "$pythonurl" "$pythonfilename"
     Pop $0 ;Get the return value
     ${If} $0 != 'OK'
       StrCpy $logstring "ERROR: $0.  Unable to download Python. Installation aborted."
@@ -359,7 +369,7 @@ Section "Git" gitId
     StrCpy $logstring "Downloading giturl $gitversion $gitsize..."
     Call logMessage
 
-    inetc::get "$giturl" "$gitfilename" /end
+    ${Download} "$giturl" "$gitfilename"
     Pop $0 ;Get the return value
     ${If} $0 != 'OK'
       StrCpy $logstring "ERROR: $0.  Unable to download $downloadName. Installation aborted."
@@ -790,7 +800,7 @@ Section "Charis" charisId
     StrCpy $logstring "Downloading $downloadName $chariszipfile from $charisurl"
     Call logMessage
 
-    inetc::get "$charisurl" "$chariszipfile" /end
+    ${Download} "$charisurl" "$chariszipfile"
     Pop $0 ;Get the return value
     ${If} $0 != 'OK'
       StrCpy $logstring "$0.  Error downloading $downloadName. Skipping Charis installation."
@@ -973,7 +983,7 @@ Section "XLingPaper" xlpId
     StrCpy $logstring "Downloading XLingPaper from $xlpurl"
     Call logMessage
 
-    inetc::get "$xlpurl" "$xlpfilename" /end
+    ${Download} "$xlpurl" "$xlpfilename"
     Pop $0 ;Get the return value
     ${If} $0 != 'OK'
       StrCpy $logstring "ERROR: $0.  Unable to download XLingPaper."
@@ -1068,7 +1078,7 @@ Section "Praat" praatId
     StrCpy $logstring "Downloading Praat from $praaturl"
     Call logMessage
 
-    inetc::get "$praaturl" "$praatfilename" /end
+    ${Download} "$praaturl" "$praatfilename"
     Pop $0 ;Get the return value
     ${If} $0 != 'OK'
       StrCpy $logstring "ERROR: $0.  Unable to download Praat."
@@ -1113,22 +1123,17 @@ Section "Praat" praatId
       StrCpy $logstring "Adding $PROGRAMFILES to path so Praat.exe will be found."
       Call logMessage
       
-      ; Set to HKLM
-      ; For info on Envar plugin, see https://nsis.sourceforge.io/EnVar_plug-in
-      EnVar::SetHKLM
-      ; Check for path set in HKLM
-      EnVar::Check "Path" "NULL"
+      ; Add to the HKLM Path (if not there) with PowerShell, since Path can be longer than
+      ; an NSIS string.  Read unexpanded and written back as REG_EXPAND_SZ, to keep %...% entries.
+      nsExec::ExecToStack `powershell -NoProfile -Command "$$k = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SYSTEM\CurrentControlSet\Control\Session Manager\Environment', $$true); $$p = $$k.GetValue('Path', '', 'DoNotExpandEnvironmentNames'); if (($$p -split ';') -notcontains '$PROGRAMFILES') { $$k.SetValue('Path', $$p.TrimEnd(';') + ';$PROGRAMFILES', 'ExpandString') }"`
       Pop $0
-      StrCpy $logstring "EnVar::Read Registry 'Path' RC = $0"
-      Call logMessage
+      Pop $1
       ${If} $0 == 0
-        ; Add to path
-        EnVar::AddValue "Path" "$PROGRAMFILES"
-        Pop $0
         StrCpy $logstring "Registry adding $PROGRAMFILES to Path Environment variable.  RC = $0"
-        Call logMessage        
+        Call logMessage
+        SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=${WAITTIME}
       ${Else}
-        StrCpy $logstring "Unable to update registry to add $PROGRAMFILES to Path; Praat may not be recognized."
+        StrCpy $logstring "Unable to update registry to add $PROGRAMFILES to Path; Praat may not be recognized.  RC = $0 $1"
         Call logMessage
       ${EndIf}
 
@@ -1193,7 +1198,7 @@ Section "Mercurial"  mercurialId
     StrCpy $logstring "Downloading Mercurial from $hgurl"
     Call logMessage
 
-    inetc::get "$hgurl" "$hgfilename" /end
+    ${Download} "$hgurl" "$hgfilename"
     Pop $0 ;Get the return value
     ${If} $0 != 'OK'
       StrCpy $logstring "ERROR: $0.  Unable to download Mercurial."
@@ -1872,6 +1877,26 @@ skipPy:
 FunctionEnd
 
 ;-----------------------------------------------------------------
+; downloadFile: Function downloads $dlUrl to $dlFile with Windows' own curl.exe
+;               (use the ${Download} macro).  Leaves registers unchanged, and
+;               pushes "OK", or an error message (and deletes any partial file).
+Function downloadFile
+  Push $0
+  Push $1
+  nsExec::ExecToStack `curl.exe -f -s -S -L -o "$dlFile" "$dlUrl"`
+  Pop $0  ; return code
+  Pop $1  ; output
+  ${If} $0 == 0
+    StrCpy $0 "OK"
+  ${Else}
+    Delete "$dlFile"
+    StrCpy $0 "Download error $0: $1"
+  ${EndIf}
+  Pop $1
+  Exch $0
+FunctionEnd
+
+;-----------------------------------------------------------------
 ; findPythonMinor: Function sets $pythonExe to the full path of an installed
 ;                  python $pythonminor (any patch), from the registry entries every
 ;                  python.org install writes (PEP 514), or to "" if there is none.
@@ -1939,11 +1964,13 @@ Function resolvePythonVersion
     StrCpy $R1 $firstLatest "" $R0  ; patch number
     ${DoWhile} $R1 >= 0
       StrCpy $R2 "$pythonminor.$R1"
-      inetc::head /silent "https://www.python.org/ftp/python/$R2/python-$R2-amd64.exe" "python_head.txt" /end
+      ; HEAD request only; -f makes a missing file an error
+      nsExec::ExecToStack `curl.exe -f -s -I -L -o NUL "https://www.python.org/ftp/python/$R2/python-$R2-amd64.exe"`
       Pop $R3
-      StrCpy $logstring "python-$R2-amd64.exe on python.org: $R3"
+      Pop $R4
+      StrCpy $logstring "python-$R2-amd64.exe on python.org: curl RC = $R3"
       Call logMessage
-      ${If} $R3 == "OK"
+      ${If} $R3 == "0"
         StrCpy $pythonversion $R2
         ${Break}
       ${EndIf}
@@ -1955,6 +1982,7 @@ Function resolvePythonVersion
   ${If} $pythonversion == ""
     FindFirst $R0 $R1 "python-$pythonminor.*-amd64.exe"
     FindClose $R0
+    ClearErrors
     ${If} $R1 != ""
       StrCpy $pythonversion $R1 -10 7  ; strip "python-" and "-amd64.exe"
       StrCpy $logstring "Using python installer found beside this one: $R1"
@@ -1978,7 +2006,7 @@ Function readLatestPythonPage
   StrCpy $latestVersion ""
   StrCpy $pythonversion ""
   Delete "python_latest.html"
-  inetc::get /silent "https://www.python.org/downloads/latest/python$pythonminor/" "python_latest.html" /end
+  ${Download} "https://www.python.org/downloads/latest/python$pythonminor/" "python_latest.html"
   Pop $R0
   StrCpy $logstring "python.org latest python$pythonminor page: $R0"
   Call logMessage
@@ -2022,7 +2050,7 @@ FunctionEnd
 ;     Otherwise they keep the values set in .onInit.
 Function resolveCharisVersion
   Delete "charis_latest.json"
-  inetc::get /silent "https://api.github.com/repos/silnrsi/font-charis/releases/latest" "charis_latest.json" /end
+  ${Download} "https://api.github.com/repos/silnrsi/font-charis/releases/latest" "charis_latest.json"
   Pop $R0
   StrCpy $logstring "GitHub latest Charis release: $R0"
   Call logMessage
@@ -2308,7 +2336,7 @@ Function .onInstSuccess
     StrCpy $logstring  "ExecShell open $pythonExe $aztfilename SW_SHOW"
     Call logMessage
     FileClose $log0   ; close the installation log file
-    ExecShell "open" "$pythonExe" "$aztfilename" SW_SHOW
+    ExecShell "open" "$pythonExe" "$\"$aztfilename$\"" SW_SHOW
 FunctionEnd
 
 ;-----------------------------------------------------------------

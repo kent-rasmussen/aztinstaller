@@ -236,6 +236,12 @@ is exe-only work that can then proceed without touching azt.
 
 ### Alignment check 2026-09-25 (both repos' agenda re-read against each other)
 
+**STATUS 2026-09-28:** #1 RESOLVED. Kent accepted the reconciliation: the exe uses the azt-named minor and
+walks back, with no bump (PR2 `PYTHONMINORS 1`). #2 RESOLVED: 3.12.10's installer is still on
+FTP (Kent), so installers are not withdrawn and walk-back is safe. #3 DONE: the azt agenda
+files were edited 2026-09-28 (Kent: "edit the azt agenda files"). Still open on THIS side:
+Plans E says "Success = stamp exists". It must compare the stamp's content (list 2).
+
 **1. CONFLICT: python minor after 2026-10-01.** The exe's PR2 rule (Research, "bump the
 MINOR, don't walk back"; "no python version ceiling") moves to 3.14 as soon as
 `downloads/latest/python3.13/` stops linking an exe. That happens when 3.13 goes
@@ -362,7 +368,9 @@ Sources: [Git/OneDrive corruption reports](https://techcommunity.microsoft.com/d
   would land loose on the Desktop for in-place updates), then
   `env\Scripts\python.exe -c "import utilities.py_modules"` with cwd = clone — azt's own
   headless bootstrap (requirements sync + sister clones + import backstop), which writes
-  its own stamp. Success = stamp exists (exit code is NOT a signal). Known gap: pip
+  its own stamp. Success = stamp exists (exit code is NOT a signal). **← FIX (alignment
+  check): stamp CONTENT must equal sha256(requirements.txt). On an in-place update, an old
+  stamp survives a failed sync.** Known gap: pip
   output is captured, so several silent minutes. Stamp format (if ever self-written):
   sha256 of raw file bytes, lowercase hex, no newline, at env root.
 - PR1 DRAFTED 2026-09-25 in the working tree (NOT compiled, NOT tested on Windows).
@@ -390,8 +398,18 @@ Sources: [Git/OneDrive corruption reports](https://techcommunity.microsoft.com/d
 - Locate plugin REMOVED 2026-09-26 (in the same working tree as PR3; commit it as its own
   change): its zip has no Unicode dll (Kent's build machine, via
   `agenda/setup_nsis_plugins.ps1`). `LocatePrograms` now = `${FileExists}` on
-  `$searchPath\$searchString`, same inputs and output. Build machine needs only Inetc +
-  EnVar. First build machine found incomplete (no `nsDialogs.nsh`); is NSIS 3.12.
+  `$searchPath\$searchString`, same inputs and output. First build machine found
+  incomplete (no `nsDialogs.nsh`); is NSIS 3.12.
+- ALL third-party plugins REMOVED 2026-09-28 (Kent: won't debug NSIS setup). Inetc →
+  `${Download}` macro → `downloadFile` (Windows' `curl.exe -f -s -S -L`, via built-in
+  nsExec; pushes "OK" like inetc; deletes partial files); HEAD probe = `curl -f -s -I`.
+  EnVar (Praat HKLM Path only) → PowerShell reading Path unexpanded and writing
+  REG_EXPAND_SZ (NSIS strings could truncate Path), then WM_SETTINGCHANGE. Stock NSIS now
+  compiles it. Target needs Windows 10 1803+ (curl). Last compile (2026-09-28) got through
+  the Python section to the first inetc call, i.e. PR1/PR2 section code compiled.
+  `agenda/setup_nsis_plugins.ps1` is obsolete (delete).
+- Also fixed in review: first launch passed `$aztfilename` unquoted (breaks on a user
+  name with a space, now that INSTDIR is under the profile).
 - F. Shortcut: keep current file-association launch (Kent 2026-09-25: no), but leave a
   comment with the `pythonw.exe main.py` form — expected to go there eventually.
 - G. (list 7) De-elevate venv/pip/first launch — YES (Kent 2026-09-25).

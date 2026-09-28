@@ -16,7 +16,7 @@ This installer will install the following:
 
 ### Prerequisites
 
-- Windows 10 or 11 
+- Windows 10 (version 1803 or later, for its built-in `curl.exe`) or 11 
 - Administrator rights for the machine-wide steps (the user's own, or an administrator's password at the prompt)
 - Write access to the folder where the installer executable is located
 
@@ -63,12 +63,8 @@ The script file is `AZT_Installer_UI.nsi`.
 
 - [NsExec](https://nsis.sourceforge.io/NsExec_plug-in) - included as part of NSIS.
 
-  The following are not part of the NSIS base installation.  
-  Install Zip files by extracting directly to the NSIS installaton directory 
-  \(usually C:\Program Files (x86)\NSIS \)
-
-- [EnVar](https://nsis.sourceforge.io/EnVar_plug-in)
-- [Inetc](https://nsis.sourceforge.io/Inetc_plug-in)
+  No other plugins are needed: a standard NSIS installation compiles the script.  Downloads use
+  Windows' own `curl.exe`, and the Path change for Praat uses PowerShell.
 
 
 ### Important
