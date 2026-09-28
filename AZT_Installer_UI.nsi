@@ -676,8 +676,9 @@ ${EndIf}
   ; Install A-Z+T's python modules now (as the user), so the first run doesn't have to.
   ; Importing utilities.py_modules from the venv python, in the clone, runs A-Z+T's own
   ; bootstrap (requirements.txt, sister repositories).  Its exit code is not a success
-  ; signal: env\azt_requirements.stamp is written only when requirements.txt installed
-  ; cleanly.  Without it, A-Z+T retries at first run.
+  ; signal: env\azt_requirements.stamp holds the sha256 of requirements.txt, written only
+  ; when it installed cleanly (a failure leaves any older stamp in place, so compare the
+  ; content, not just that it exists).  Otherwise A-Z+T retries at first run.
   !insertmacro MUI_HEADER_TEXT_PAGE "${TITLENAME}" "Installing A-Z+T modules.  This may take several minutes..."
   Var /GLOBAL venvPython
   Var /GLOBAL envDir
@@ -702,7 +703,25 @@ ${EndIf}
     Call logMessage
     nsExec::ExecToLog `"$venvPython" -c "import utilities.py_modules"`
     Pop $0
-    ${If} ${FileExists} "$envDir\azt_requirements.stamp"
+    ; The stamp must match the sha256 of requirements.txt (lowercase hex)
+    StrCpy $2 ""
+    ClearErrors
+    FileOpen $1 "$envDir\azt_requirements.stamp" r
+    ${IfNot} ${Errors}
+      FileRead $1 $2
+      FileClose $1
+      ${StrTrimNewLines} $2 $2
+    ${EndIf}
+    ClearErrors
+    nsExec::ExecToStack `"$venvPython" -c "import hashlib; print(hashlib.sha256(open('requirements.txt','rb').read()).hexdigest())"`
+    Pop $0
+    Pop $3
+    ${StrTrimNewLines} $3 $3
+    StrCpy $logstring "Requirements stamp: <$2>; requirements.txt sha256: <$3>"
+    Call logMessage
+    ${If} $0 == 0
+    ${AndIf} $2 != ""
+    ${AndIf} $2 S== $3
       StrCpy $logstring "A-Z+T modules installed."
     ${Else}
       StrCpy $logstring "A-Z+T modules not fully installed; A-Z+T will retry when it starts."

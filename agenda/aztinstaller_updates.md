@@ -89,6 +89,8 @@ naive shallowing breaks a feature:
      `--extra-index-url https://download.pytorch.org/whl/cpu` line (checked 2026-09-24).
    - **Venv location: `<azt>\env`** — settled by Plans E (it is what `ensure_venv()`
      itself creates; `..\env` would land loose on the Desktop for in-place updates).
+     Refined 2026-09-28: an ALREADY-EXISTING `..\env` is reused, since `ensure_venv()`
+     prefers it and a second venv would go unused; the exe never creates `..\env`.
    - **Entry point: settled by Plans E** — the exe runs `env\Scripts\python.exe -c "import
      utilities.py_modules"`, i.e. azt's IMPORT-TIME bootstrap (`ensure_venv` →
      `sync_requirements` → `ensure_sister_repos`). That makes those import side effects a
@@ -239,8 +241,8 @@ is exe-only work that can then proceed without touching azt.
 **STATUS 2026-09-28:** #1 RESOLVED. Kent accepted the reconciliation: the exe uses the azt-named minor and
 walks back, with no bump (PR2 `PYTHONMINORS 1`). #2 RESOLVED: 3.12.10's installer is still on
 FTP (Kent), so installers are not withdrawn and walk-back is safe. #3 DONE: the azt agenda
-files were edited 2026-09-28 (Kent: "edit the azt agenda files"). Still open on THIS side:
-Plans E says "Success = stamp exists". It must compare the stamp's content (list 2).
+files were edited 2026-09-28 (Kent: "edit the azt agenda files"). The stamp-content check
+on THIS side is DONE 2026-09-28 (Plans E).
 
 **1. CONFLICT: python minor after 2026-10-01.** The exe's PR2 rule (Research, "bump the
 MINOR, don't walk back"; "no python version ceiling") moves to 3.14 as soon as
@@ -368,9 +370,11 @@ Sources: [Git/OneDrive corruption reports](https://techcommunity.microsoft.com/d
   would land loose on the Desktop for in-place updates), then
   `env\Scripts\python.exe -c "import utilities.py_modules"` with cwd = clone — azt's own
   headless bootstrap (requirements sync + sister clones + import backstop), which writes
-  its own stamp. Success = stamp exists (exit code is NOT a signal). **← FIX (alignment
-  check): stamp CONTENT must equal sha256(requirements.txt). On an in-place update, an old
-  stamp survives a failed sync.** Known gap: pip
+  its own stamp. Success = stamp CONTENT equals sha256(requirements.txt) (exit code is NOT
+  a signal; an old stamp survives a failed sync). **DONE 2026-09-28:** stamp read +
+  trimmed, hash computed by the venv python (`hashlib ... hexdigest()`), compared
+  case-sensitively (`S==`). Venv: reuse an EXISTING sister `..\env` (azt's
+  `ensure_venv()` prefers it), else create/use `<azt>\env` — never creates `..\env`. Known gap: pip
   output is captured, so several silent minutes. Stamp format (if ever self-written):
   sha256 of raw file bytes, lowercase hex, no newline, at env root.
 - PR1 DRAFTED 2026-09-25 in the working tree (NOT compiled, NOT tested on Windows).
@@ -384,7 +388,7 @@ Sources: [Git/OneDrive corruption reports](https://techcommunity.microsoft.com/d
   azt's requirements install on 3.14. Alignment #2 settled: Kent confirmed 3.12.10's
   installer is still on FTP → walk-back is safe. Shape: `findPythonMinor` (PEP 514
   registry, HKCU then HKLM, 64-bit view) → skip install if present; else
-  `resolvePythonVersion` (latest page → walk back with `inetc::head` → installer beside
+  `resolvePythonVersion` (latest page → walk back with a HEAD probe → installer beside
   the exe) → install → `findPythonMinor` again (old `getPythonPath` kept as fallback).
   Old "≥ desired + remove other pythons from PATH" block deleted. Test: minor 3.12 must
   resolve to 3.12.10.
