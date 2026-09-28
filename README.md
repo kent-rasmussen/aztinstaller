@@ -9,7 +9,7 @@ This installer will install the following:
 - [Charis SIL Fonts](https://software.sil.org/charis/)
 - [XLingPaper](https://software.sil.org/xlingpaper/)
 - [Praat](https://www.fon.hum.uva.nl/praat/)
-- [Mercurial](https://www.mercurial-scm.org/)
+- [Mercurial](https://www.mercurial-scm.org/) (not selected by default)
 
 
 ## Installation Instructions
@@ -32,7 +32,7 @@ Select components to install.   Grayed out components are required.
 
 During installation, if a component has already been installed and is at the required version, the installer will skip installation of that component.  If the component is at an older version, the installer will install the newer verison.  Python is the exception: the installer uses python 3.13 (any release) if it is installed, and otherwise installs the newest 3.13 release with a Windows installer (its last release with one, once 3.13 gets security fixes only; `PYTHONMINORS` in the script allows moving to a newer minor instead), beside any other python; other pythons on the path are left alone.
 
-If successful, the installer will launch A-Z+T (main.py).  The first time A-Z+T is launched, it will perform some scaling configuration, which may take a few minutes.  
+The last page says where A-Z+T was installed (and whether there were problems), with a "Launch A-Z+T now" box, checked by default; uncheck it to finish without starting A-Z+T.  The first time A-Z+T is launched, it will perform some scaling configuration, which may take a few minutes.  
 
 ### Troubleshooting
 

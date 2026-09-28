@@ -418,12 +418,68 @@ Sources: [Git/OneDrive corruption reports](https://techcommunity.microsoft.com/d
   - FIXED: venv location now mirrors `ensure_venv()` (sister `..\env` first, else
     `<azt>\env`) — otherwise an in-place desktop update with `Desktop\env` got a second,
     unused full venv.
-  - PRE-EXISTING, NOT fixed (decide): (a) USB repo search compares `$1` instead of `$R5`
-    (`${If} $1 == $aztRepoName`), so a USB copy is never found; (b) it uses `wmic`, absent
-    by default on Windows 11 24H2+ (falls through to GitHub, so harmless but dead);
-    (c) `gitPullAZT` runs `ExecWait "$InstDrive"` (executes "C:\" — no-op/error);
+  - PRE-EXISTING: (a) FIXED 2026-09-28 (Kent: "fix both"): USB repo search compared `$1`
+    instead of `$R5`, so a USB copy was never found; and it then set the clone source to
+    the search PATTERN (`D:\*azt.git`) — now `$3\$R5` (`D:\azt.git`). (b) NOT fixed: it
+    uses `wmic`, absent by default on Windows 11 24H2+ (falls through to GitHub, so the
+    USB search does nothing there); (c) FIXED: `gitPullAZT`'s `ExecWait "$InstDrive"` /
+    `"$ExeDrive"` removed (executed a drive letter; SetOutPath already changes folder);
     (d) pinned Git 2.51.2 / Praat 6446 / XLingPaper 3-17-0 / Mercurial 6.0 URLs — not
     checked, may be stale (Praat's site in particular may host only the current build).
+  - ADDED 2026-09-28 (Kent: "give the user some indication of a failed install, rather
+    than just disappearing"): non-fatal failures call `logWarning` (logs + collects);
+    the elevated copy hands its list back via `AZT_Installer_admin_warnings.txt` (also
+    on abort); the end message says "installed, but with these problems: …" instead of
+    "completed successfully". Fatal ones already had a message box + "View log?".
+  - ADDED 2026-09-28 (Kent): Git and Praat resolved like Charis, from GitHub
+    `releases/latest` via shared `readLatestTag`; pins kept only as offline fallback.
+    Git: tag `v2.55.0.windows.5` → `Git-2.55.0.5-64-bit.exe` (`.windows.1` → no suffix),
+    checked live; old pin 2.51.2 was 4 releases behind. Praat: `praat/praat.github.io`,
+    tag `v7.0.02` → `praat7002_win-x64v1.zip` (v1 = baseline CPU; v3 needs AVX2). The old
+    pin's name format (`_win-intel64`) no longer exists, so the old Praat download was
+    probably already dead; fallback now 7.0.02 on GitHub. UNVERIFIED: new zip still has
+    `Praat.exe` at its root (the extract-to-Program-Files step assumes it). XLingPaper
+    (Kent): GitHub `sillsdev/XLingPap` releases/latest, tag `v3.19.3` →
+    `XLingPaper3.19.3.0XXEPersonalEditionFullSetup.exe` (tag + ".0"; checked live;
+    derived from the tag, so a naming change would show as a download warning);
+    fallback pin 3-17-0 on software.sil.org → 3.19.3 on GitHub. Mercurial (Kent): resolved from
+    `https://www.mercurial-scm.org/release/windows/latest.dat` (tab-separated lines; the
+    `-x64.exe` line's URL; 7.1.2 today, checked live; fallback pin 6.0 → 7.1.2), and
+    now NOT selected by default (`Section /o`).
+  - DECIDED (Kent 2026-09-28): launch at the end is a CHOICE — MUI finish page with a
+    "Launch A-Z+T now" checkbox, checked by default (`MUI_FINISHPAGE_RUN_FUNCTION
+    launchAZT`). `finishPre` shows the problem list (if any) and sets the page text,
+    which names `$INSTDIR`; the elevated copy skips the page. The old MessageBox +
+    unconditional launch in `.onInstSuccess` are gone (cleanup stays there).
+  - AUDIT 2, 2026-09-28 (after warnings / finish page / latest-release lookups):
+    - FIXED: `ClearErrors` before each `CreateShortcut`; a stale error flag would have
+      reported a shortcut failure (now a user-visible warning) that didn't happen.
+    - RISK, decide: **proxies.** Windows' curl.exe does not use the system (WinINet/IE)
+      proxy settings that Inetc used; it only honours HTTPS_PROXY-style variables. On a
+      network that requires a configured proxy, every download would fail (as warnings,
+      or the Python/Git aborts). Alternative with system proxy support: PowerShell
+      `Invoke-WebRequest` (or BITS). Unknown whether any field/office network needs one.
+    - RISK, minor: GitHub's unauthenticated API allows 60 calls/hour per IP; each install
+      makes 4 (Git, Charis, Praat, XLingPaper). ~15 installs/hour from one office IP
+      (e.g. a workshop) would hit the limit; the lookups then fall back to the pins.
+    - PRE-EXISTING, minor: shortcut icons point into `$EXEDIR` (the installer's own
+      folder); if the installer is deleted afterwards (e.g. Downloads cleaned), the
+      shortcuts lose their icons but still work. Leftover `git_version.txt` /
+      `python_version.txt` in `$EXEDIR`.
+  - DONE 2026-09-28 (Kent: "we should respect proxy configurations"): `setProxy` in
+    `.onInit` reads the Windows proxy for https://github.com/ (PowerShell
+    `GetSystemWebProxy`, which evaluates PAC/auto-detect) and sets HTTPS_PROXY/HTTP_PROXY
+    for the installer process, so curl, git clone, pip (bootstrap) and the first A-Z+T
+    launch all inherit it; pre-set variables win. The elevated copy gets the user's value
+    as `/PROXY=` (it may be another account). NOT covered: proxies needing a login
+    (NTLM/Kerberos) — env vars can't carry that. azt's own later network use (updates)
+    doesn't get the variables from the shortcut — an azt question.
+  - GitHub rate limit (Kent: not worried): on hitting it, lookups fail quietly and the
+    pinned fallbacks install; only the log says so; resets an hour after the window's
+    first request.
+  - DONE: shortcut icons now installed to `%LOCALAPPDATA%\Programs\AZT\icons` (survive
+    a Downloads purge; kept out of the git clone). `git_version.txt` /
+    `python_version.txt` added to cleanup.
   - KNOWN LIMITS (unchanged): Git installed this run isn't on the user installer's PATH
     for the bootstrap's sister clones (azt retries at start); `/S` silent skips the
     components page; the `getPythonPath` fallback (only if the registry lookup fails
@@ -537,9 +593,12 @@ Checked live 2026-09-25:
   `https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe`. Use as the PR2 test.
 - **Kent 2026-09-25: bump the MINOR, don't walk back.** No exe on `latest/python<minor>/`
   ⇒ that minor is security-only ⇒ newer maintained minors exist ⇒ try `<minor+1>`
-  rather than walking back to the last maintenance release. Kent 2026-09-25: **there is
-  no python version ceiling** in azt. (Conflicts with list 6's "ADR 0005 floor/ceiling"
-  wording — reconcile with azt.) The only practical limit is whether `requirements.txt`
+  rather than walking back to the last maintenance release. ~~Kent 2026-09-25: **there is
+  no python version ceiling** in azt.~~ **SUPERSEDED 2026-09-28** (Kent: *"adr5 needs to
+  acknowledge the ceiling, as python3.14 would break kivy"*). There IS a ceiling, 3.13,
+  and it is set by kivy having no cp314 wheels. ADR 0005 D3 now says so and requires every
+  installer to take its minor from there. So: no bump, walk back within the named minor
+  (as PR2's `PYTHONMINORS 1` already does). The only practical limit is whether `requirements.txt`
   installs on the new minor (e.g. a torch pin without wheels for it) — that's azt's to
   keep current, not the exe's to guard.
 - **RISK: a client with a NEWER python than the target (2026-09-25).** Real, not theoretical:
