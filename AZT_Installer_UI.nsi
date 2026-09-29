@@ -6,7 +6,6 @@
   !include FileFunc.nsh
   !include StrFunc.nsh    
   !include WinMessages.nsh  ; For SendMessage
-  !include Locate.nsh
 
 ; Used to reposition the installer window
   !ifndef SPI_GETWORKAREA
@@ -20,7 +19,16 @@
   ${StrStr} 
   ${StrRep}
   ${StrLoc}
-  ${StrTrimNewLines}  
+  ${StrTrimNewLines}
+
+; ${Download} "url" "file": download with Windows' own curl.exe (Windows 10 1803+),
+; so no download plugin is needed.  Pushes "OK", or an error message.
+  !macro _Download url file
+    StrCpy $dlUrl "${url}"
+    StrCpy $dlFile "${file}"
+    Call downloadFile
+  !macroend
+  !define Download "!insertmacro _Download"
 
 
 ; Show all the DetailsPrint to the user while installation is in progress
@@ -35,13 +43,16 @@
   !define INSTALLERNAME "AZT_Installer"  ; original name
 
   !define WAITTIME 5000  ; Milliseconds to wait for system calls and retries
+  ; Python minors to try, from $pythonminor up, before walking back down its releases.
+  ; 1 = never move to a newer minor (A-Z+T's requirements don't install on 3.14 yet)
+  !define PYTHONMINORS 1
 
 ;--------------------------------
 ; Global variables    (Ref: See "Function .onInit" for initialization of values)
 
+  Var /GLOBAL pythonminor
   Var /GLOBAL pythonversion
   Var /GLOBAL pythonfilename
-  Var /GLOBAL pythonsize
   Var /GLOBAL pythonurl
   Var /GLOBAL pythonPath
   Var /GLOBAL pythonExe
@@ -77,13 +88,18 @@
   var /GLOBAL aztRepoName
   var /GLOBAL aztRepoURL
   var /GLOBAL aztfilename
-  var /GLOBAL transcriberfilename
 
   ; Use 0 for current user and 1 for admin user
   Var /GLOBAL withadmin
+  ; "1" in the elevated copy started by runAdminSteps (/ADMINSTEPS)
+  Var /GLOBAL adminsteps
+  Var /GLOBAL adminArgs
   var /GLOBAL logfile
   Var /GLOBAL log0
   var /GLOBAL logstring
+  ; Problems that don't stop the installation, for the message at the end (see logWarning)
+  Var /GLOBAL warnings
+  Var /GLOBAL finishText
   Var /GLOBAL found
   Var /GLOBAL downloadName
   Var /GLOBAL ReturnError
@@ -91,6 +107,10 @@
   Var /Global cmdFile
   Var /Global pathFile
   Var /GLOBAL desiredVersion
+  Var /GLOBAL dlUrl
+  Var /GLOBAL dlFile
+  Var /GLOBAL tagUrl
+  Var /GLOBAL latestTag
   
 
 ;------------------------------------------------------------------------------
@@ -102,11 +122,13 @@
   OutFile "${INSTALLERNAME}.exe"
   Unicode True
 
-  ;Request application privileges for Windows 
-  RequestExecutionLevel admin
-  
-  ;Default installation folder  (sets INSTDIR)
-  InstallDir "$DESKTOP\azt"
+  ;Request application privileges for Windows
+  ;Run as the user; machine-wide steps run in an elevated copy (see runAdminSteps)
+  RequestExecutionLevel user
+
+  ;Default installation folder  (sets INSTDIR; an existing $DESKTOP\azt is kept, see .onInit)
+  ;The parent folder is the suite folder, where A-Z+T puts its sister repositories
+  InstallDir "$LOCALAPPDATA\Programs\AZT\azt"
 
 ;--------------------------------
 ;Descriptions - if setting up multiple languages
@@ -137,6 +159,8 @@
   ; Disable MUI_PAGE_COMPONENTS if you do not want the user to select which sections to install
   ; Every "Section" will appear on the list.   
   ; Required Sections are checked and set to Read/Only in .onInit using SectionSetFlags
+  !define MUI_PAGE_CUSTOMFUNCTION_PRE skipComponentsIfAdmin
+  !define MUI_PAGE_CUSTOMFUNCTION_LEAVE componentsLeave
   !insertmacro MUI_PAGE_COMPONENTS
   
   ; Enable MUI_PAGE_DIRECTORY to permit user to change the installationi target directory
@@ -145,11 +169,13 @@
   !insertmacro MUI_PAGE_INSTFILES
   
   ; FINISHPAGE macros are used to display a successful completion page with a "Launch Application" option
-  ; Disabling for now since we are launching the page conditionally in .onInstSuccess
-  ; !define MUI_FINISHPAGE_RUN "cmd /c python $INSTDIR\main.py"
-  ; !define MUI_FINISHPAGE_RUN_TEXT "Launch A-Z+T now ($INSTDIR\main.py)"
-  ;!define MUI_FINISHPAGE_TEXT "${APPNAME} finished installing at${NEWLINE}${NEWLINE}$aztfilename.${NEWLINE}${NEWLINE}Click Finish to close setup."
-  ;!insertmacro MUI_PAGE_FINISH
+  ; (checked by default; the user can uncheck it).  Text is set in finishPre.
+  !define MUI_PAGE_CUSTOMFUNCTION_PRE finishPre
+  !define MUI_FINISHPAGE_TEXT "$finishText"
+  !define MUI_FINISHPAGE_RUN ""
+  !define MUI_FINISHPAGE_RUN_TEXT "Launch A-Z+T now"
+  !define MUI_FINISHPAGE_RUN_FUNCTION launchAZT
+  !insertmacro MUI_PAGE_FINISH
 
   ; Uninstaller macros
   ;!insertmacro MUI_UNPAGE_CONFIRM
@@ -176,125 +202,30 @@ Section "Python" pythonId
   Call logMessage
 
   StrCpy $downloadName "python"
-  Var /GLOBAL tempString
 
-  ; Check if desired or later version is already installed
-  StrCpy $desiredVersion $pythonVersion
-  Call checkVersion  
-  Pop $0 ; get exit code
-  ${If} $0 == "0"
-    Pop $1 ; get version
-    StrCpy $tempString $1
-    StrCpy $logstring "$downloadName is already installed, version is <$tempString>, skipping installation."
+  ; Check if python $pythonminor (any patch) is already installed.  Python minors install
+  ; side by side, and the venv is made with this one by full path, so any other python
+  ; on the path (older or newer) is left alone.
+  Call findPythonMinor
+  ${If} $pythonExe != ""
+    StrCpy $logstring "$downloadName $pythonminor is already installed, skipping installation."
     Call logMessage
     goto pythonEnd
   ${EndIf}
 
-  ; If there is an older version, remove it from the path before installing the new one
-  ; This should prevent the first run of azt from picking up the wrong version
-  ${If} $0 == "2"
-    Pop $1 ; get version
-    StrCpy $tempString $1
-    StrCpy $logstring "$downloadName version <$tempString> found.  Removing from path..."
+  ; Which release to install (may move to a newer minor, see resolvePythonVersion)
+  Call resolvePythonVersion
+  ${If} $pythonversion == ""
+    StrCpy $logstring "Unable to find a python $pythonminor installer, online or beside this installer.  Make sure your internet is connected.  Installation aborted."
     Call logMessage
-
-    call getPythonPath
-    StrCpy $logstring "getPythonPath returned pythonExe:  $pythonExe"
+    MessageBox MB_OK|MB_ICONEXCLAMATION $logstring /SD IDOK
+    Abort
+  ${EndIf}
+  Call findPythonMinor
+  ${If} $pythonExe != ""
+    StrCpy $logstring "$downloadName $pythonminor is already installed, skipping installation."
     Call logMessage
-
-    ; if only the name was set, it must be in the path so use "where" to get the real path
-    ${If} $pythonExe == "python"    
-      StrCpy $pathFile "pythonpath.txt"
-      Delete $pathFile
-      ClearErrors
-      ExecWait 'cmd /C where python >$pathFile' $0
-      StrCpy $logstring "'where python' RC = $0"
-      Call logMessage        
-      ${If} $0 == 0
-        ; Read the path from the path file
-        FileOpen $0 $pathFile r
-        FileRead $0 $tempString
-        FileClose $0
-        ${StrTrimNewLines} $pythonExe $tempString
-        StrCpy $logstring "Python path from path file:  $pythonExe"
-        Call logMessage
-      ${EndIf}
-    ${EndIf}
-
-    ${If} $pythonExe != ""
-    ${If} $pythonExe != "py"
-    ${If} $pythonExe != "python"
-        StrCpy $logstring "Old python path found: $pythonExe"
-        Call logMessage
-
-        ; Get the path portion by stripping off the exe file name.  
-        ; It will be used to remove from registry environment path
-        StrLen $R1 $pythonExe ; Get the length of the string
-        StrCpy $R0 -1 ; Initialize the position variable to -1 (not found)        
-        ; Loop through the string from the end to the beginning        
-        ${ForEach} $R3 $R1 0 - 1
-            StrCpy $R4 $pythonExe 1 $R3 ; Get the character at position $R3
-            ;StrCpy $logstring "R4: $R4"
-            ;Call logMessage
-            StrCmp $R4 "\" 0 +3
-            StrCpy $R0 $R3 ; Update the position if backslash is found
-            ${Break}
-        ${Next}
-
-        StrCpy $logstring "Offset: $R0"
-        Call logMessage
-        Var /GLOBAL oldPath
-        StrCpy $oldPath $pythonExe $R0
-        StrCpy $logstring "Old Python path: $oldPath"
-        Call logMessage
-
-        ; Remove the old python path from the system path
-        ; For info on Envar plugin, see https://nsis.sourceforge.io/EnVar_plug-in
-        EnVar::SetHKLM
-        ; Check for path set in HKLM (Local Machine)
-        EnVar::Check "Path" "NULL"
-        Pop $0
-        StrCpy $logstring "EnVar::Read Registry 'Path' RC = $0"
-        Call logMessage
-        ${If} $0 == 0
-          ; Remove from path (with and without terminating backslash)
-          EnVar::DeleteValue "Path" "$oldPath"
-          Pop $0
-          StrCpy $logstring "Registry attempt to remove '$oldPath' from HKLM Path Environment variable.  RC = $0"
-          Call logMessage
-          EnVar::DeleteValue "Path" "$oldPath\"
-          Pop $0
-          StrCpy $logstring "Registry attempt to remove '$oldPath\' from HKLM Path Environment variable.  RC = $0"
-          Call logMessage
-        ${Else}
-          StrCpy $logstring "Unable to update registry HKLM to remove $oldPath."
-          Call logMessage
-        ${EndIf}
-
-        ; Remove the old python path from the current user's path
-        EnVar::SetHKCU
-        ; Check for path set in HKCU (Current User)        
-        EnVar::Check "Path" "NULL"
-        Pop $0
-        StrCpy $logstring "EnVar::Read Registry 'Path' RC = $0"
-        Call logMessage
-        ${If} $0 == 0
-          ; Remove from path (with and without terminating backslash)
-          EnVar::DeleteValue "Path" "$oldPath"
-          Pop $0
-          StrCpy $logstring "Registry attempt to remove '$oldPath' from HKCU Path Environment variable.  RC = $0"
-          Call logMessage
-          EnVar::DeleteValue "Path" "$oldPath\"
-          Pop $0
-          StrCpy $logstring "Registry attempt to remove '$oldPath\' from HKCU Path Environment variable.  RC = $0"
-          Call logMessage
-        ${Else}
-          StrCpy $logstring "Unable to update registry HKCU to remove $oldPath."
-          Call logMessage
-        ${EndIf}      
-    ${EndIf} 
-    ${EndIf}
-    ${EndIf}
+    goto pythonEnd
   ${EndIf}
 
   ;---------------------------------------------------------------
@@ -319,8 +250,7 @@ Section "Python" pythonId
     StrCpy $logstring "Downloading Python from $pythonurl"
     Call logMessage
 
-    ; For inetc plugin ref: https://nsis.sourceforge.io/Inetc_plug-in
-    inetc::get "$pythonurl" "$pythonfilename" /end
+    ${Download} "$pythonurl" "$pythonfilename"
     Pop $0 ;Get the return value
     ${If} $0 != 'OK'
       StrCpy $logstring "ERROR: $0.  Unable to download Python. Installation aborted."
@@ -379,64 +309,17 @@ Section "Python" pythonId
     StrCpy $logstring "Python installed successfully."
     Call logMessage
   ${EndIf}
-  
-
-;----------------------------------------------------------------
-; Enable readLongPathsEnabled in Registry for use with Python
-
-!insertmacro MUI_HEADER_TEXT_PAGE "${TITLENAME}"  "Updating Registry LongPathsEnabled"
-StrCpy $logstring "${NEWLINE}-----  Registry LongPathsEnabled Test/Set ----- "
-Call logMessage
-; Ensure LongPathsEnabled is already set in the Windows Registry else set it now  
-; Cases 1 - 5 map to HKLM,HKCU,HKCR,HKU,HKCC (no easy way to do a for with strings)
-StrCpy $found "false"
-StrCpy $R2 HKLM
-${For} $R1 1 5
-  ${If} $found == "false"
-    Call readLongPathsEnabled
-    ifErrors loopRegistryNext
-    StrCpy $logstring "Registry LongPathsEnabled found: $R0"
-    Call logMessage
-    ${If} $R0 == 1
-      StrCpy $logstring "LongPathsEnabled registry already set for $R2."
-      Call logMessage
-      StrCpy $found "true"
-    ${Else} 
-      ; Entry found but needs to be changed to 1
-      StrCpy $logstring "LongPathsEnabled registry found for $R2, updating to 1."
-      Call logMessage
-      Call writeLongPathsEnabled
-      ifErrors errorExitLongPaths
-      StrCpy $found "true"
-    ${EndIf}
-  ${endIf}
-loopRegistryNext:
-  ClearErrors
-${Next}
-
-${If} $found == "false"  
-  ; Not found so try to set in HKLM
-  StrCpy $R2 HKLM
-  StrCpy $R1 "1"
-  Call addLongPathsEnabled
-  ifErrors errorExitLongPaths pythonEnd
-  
-errorExitLongPaths:
-  ClearErrors
-  StrCpy $logstring "ERROR: Error setting Registry LongPathsEnabled"
-  Call logMessage
-  ; Does this need to abort or can it continue?
-  ;MessageBox MB_OK $logstring
-  ;Abort
-${EndIf}  
 
 ;--------------------------------
 pythonEnd:
   !insertmacro MUI_HEADER_TEXT_PAGE "${TITLENAME}"  "Locating Python..."
   StrCpy $logstring "${NEWLINE}-----  Get Final Python Path ----- "
   Call logMessage
-  
-  call getPythonPath
+
+  Call findPythonMinor
+  ${If} $pythonExe == ""
+    call getPythonPath
+  ${EndIf}
   ${If} $pythonExe == ""
     StrCpy $logstring "Unable to find python.  You may need to run this installer again to complete the full installation."
     Call logMessage
@@ -457,6 +340,14 @@ Section "Git" gitId
   Call logMessage
 
   StrCpy $downloadName "git"
+
+  ; As the user: run all the machine-wide steps (this one included) in one elevated copy
+  ${If} $adminsteps != "1"
+    Call runAdminSteps
+    goto gitEnd
+  ${EndIf}
+  SetAutoClose true  ; the elevated copy closes itself when done
+  Call resolveGitVersion
 
   ; Check if desired or later Git is already installed
   StrCpy $desiredVersion $gitVersion
@@ -486,7 +377,7 @@ Section "Git" gitId
     StrCpy $logstring "Downloading giturl $gitversion $gitsize..."
     Call logMessage
 
-    inetc::get "$giturl" "$gitfilename" /end
+    ${Download} "$giturl" "$gitfilename"
     Pop $0 ;Get the return value
     ${If} $0 != 'OK'
       StrCpy $logstring "ERROR: $0.  Unable to download $downloadName. Installation aborted."
@@ -534,8 +425,64 @@ gitEnd:
   ${Else}
     StrCpy $logstring "Using Git path: $gitExe"
   ${EndIf}
-  
 
+
+SectionEnd
+
+;***************************************************************************************
+; Hidden section, run only in the elevated copy (HKLM needs admin)
+Section "-LongPaths" longPathsId
+
+;----------------------------------------------------------------
+; Enable readLongPathsEnabled in Registry for use with Python
+
+!insertmacro MUI_HEADER_TEXT_PAGE "${TITLENAME}"  "Updating Registry LongPathsEnabled"
+StrCpy $logstring "${NEWLINE}-----  Registry LongPathsEnabled Test/Set ----- "
+Call logMessage
+; Ensure LongPathsEnabled is already set in the Windows Registry else set it now
+; Cases 1 - 5 map to HKLM,HKCU,HKCR,HKU,HKCC (no easy way to do a for with strings)
+StrCpy $found "false"
+StrCpy $R2 HKLM
+${For} $R1 1 5
+  ${If} $found == "false"
+    Call readLongPathsEnabled
+    ifErrors loopRegistryNext
+    StrCpy $logstring "Registry LongPathsEnabled found: $R0"
+    Call logMessage
+    ${If} $R0 == 1
+      StrCpy $logstring "LongPathsEnabled registry already set for $R2."
+      Call logMessage
+      StrCpy $found "true"
+    ${Else}
+      ; Entry found but needs to be changed to 1
+      StrCpy $logstring "LongPathsEnabled registry found for $R2, updating to 1."
+      Call logMessage
+      Call writeLongPathsEnabled
+      ifErrors errorExitLongPaths
+      StrCpy $found "true"
+    ${EndIf}
+  ${endIf}
+loopRegistryNext:
+  ClearErrors
+${Next}
+
+${If} $found == "false"
+  ; Not found so try to set in HKLM
+  StrCpy $R2 HKLM
+  StrCpy $R1 "1"
+  Call addLongPathsEnabled
+  ifErrors errorExitLongPaths longPathsEnd
+
+errorExitLongPaths:
+  ClearErrors
+  StrCpy $logstring "ERROR: Error setting Registry LongPathsEnabled"
+  Call logWarning
+  ; Does this need to abort or can it continue?
+  ;MessageBox MB_OK $logstring
+  ;Abort
+${EndIf}
+
+longPathsEnd:
 SectionEnd
 
 
@@ -606,10 +553,10 @@ Section "AZT" aztId
         StrCpy $logstring "$R3 file search: $R4 $R5"
         Call logMessage
         FindClose $R4
-        ${If} $1 == $aztRepoName
-          StrCpy $logstring "found repo in $R3"          
+        ${If} $R5 == $aztRepoName
+          StrCpy $logstring "found repo in $R3"
           Call logMessage
-          StrCpy $azt "$R3"
+          StrCpy $azt "$3\$R5"
           Goto exitFileLoop
         ${EndIf}
 
@@ -659,47 +606,17 @@ StrCpy $logstring "git config path: $newPathString"
 
 ClearErrors
 Var /GLOBAL cmd
-; Set the safe.directory in both --system and --global, using both "\" and "/" paths to be safe
+; Set the safe.directory in --global (--system needs admin), using both "\" and "/" paths to be safe
 ; Developer Notes:  To validate in a windows command prompt, use:
-;                     git config --system --get-all safe.directory
-;                   To clear them: 
-;                     git config --system --unset-all safe.directory
+;                     git config --global --get-all safe.directory
+;                   To clear them:
+;                     git config --global --unset-all safe.directory
 
 ; Define the path to the log file
 StrCpy $tempLogFile "git_error.log"
 ${If} $gitExe == ""  ; Should have been set during git install, else assume path is in env.
   StrCpy $logstring "gitExe variable is not set - using 'git'"
   StrCpy $gitExe "git"
-${EndIf}
-
-StrCpy $cmd `$\"$gitExe$\" config --system --add safe.directory $\"$INSTDIR$\"`
-StrCpy $logstring "Executing $cmd ..."
-Call logMessage
-ExecWait `cmd /C $\"$cmd$\" 2>$tempLogFile` $0
-StrCpy $logstring "   Return value: $0"
-Call logMessage
-${If} $0 != 0
-  FileOpen $0 $tempLogFile r
-  FileRead $0 $ReturnError
-  FileClose $0
-  StrCpy $logstring "ERROR: Git config error:  $ReturnError"
-  Call logMessage
-  abort
-${EndIf}
-
-StrCpy $cmd `$\"$gitExe$\" config --system --add safe.directory $\"$newPathString$\"`
-StrCpy $logstring "Executing $cmd ..."
-Call logMessage
-ExecWait `cmd /C $\"$cmd$\" 2>$tempLogFile` $0
-StrCpy $logstring "   Return value: $0"
-Call logMessage
-${If} $0 != 0
-  FileOpen $0 $tempLogFile r
-  FileRead $0 $ReturnError
-  FileClose $0
-  StrCpy $logstring "ERROR: Git config error:  $ReturnError"
-  Call logMessage
-  abort
 ${EndIf}
 
 StrCpy $cmd `$\"$gitExe$\" config --global --add safe.directory $\"$INSTDIR$\"`
@@ -732,7 +649,7 @@ ${If} $0 != 0
   abort
 ${EndIf}
 
-StrCpy $cmd `$\"$gitExe$\" clone $azt $\"$INSTDIR$\"`
+StrCpy $cmd `$\"$gitExe$\" clone --depth 1 $azt $\"$INSTDIR$\"`
 StrCpy $logstring "Executing $cmd ..."
 Call logMessage
 ClearErrors
@@ -762,41 +679,125 @@ ${If} $0 != 0
   ${EndIf}
 ${EndIf}
 
- 
-  ;----------------------------------------------------------------  
+
+  ;----------------------------------------------------------------
+  ; Install A-Z+T's python modules now (as the user), so the first run doesn't have to.
+  ; Importing utilities.py_modules from the venv python, in the clone, runs A-Z+T's own
+  ; bootstrap (requirements.txt, sister repositories).  Its exit code is not a success
+  ; signal: env\azt_requirements.stamp holds the sha256 of requirements.txt, written only
+  ; when it installed cleanly (a failure leaves any older stamp in place, so compare the
+  ; content, not just that it exists).  Otherwise A-Z+T retries at first run.
+  !insertmacro MUI_HEADER_TEXT_PAGE "${TITLENAME}" "Installing A-Z+T modules.  This may take several minutes..."
+  Var /GLOBAL venvPython
+  Var /GLOBAL envDir
+  ; Where A-Z+T's ensure_venv() looks: a sister ..\env first, else <azt>\env
+  ${GetParent} "$INSTDIR" $envDir
+  StrCpy $envDir "$envDir\env"
+  ${IfNot} ${FileExists} "$envDir\Scripts\python.exe"
+    StrCpy $envDir "$INSTDIR\env"
+  ${EndIf}
+  StrCpy $venvPython "$envDir\Scripts\python.exe"
+  SetOutPath "$INSTDIR"
+  ${IfNot} ${FileExists} "$venvPython"
+    StrCpy $logstring "Creating virtual environment $envDir ..."
+    Call logMessage
+    nsExec::ExecToLog `"$pythonExe" -m venv "$envDir"`
+    Pop $0
+    StrCpy $logstring "   Return value: $0"
+    Call logMessage
+  ${EndIf}
+  ; Git installed in this run isn't on this installer's PATH yet, so add its folder for
+  ; A-Z+T's bootstrap (which clones its sister repositories) and for the launch at the
+  ; end.  cmd expands %PATH% itself, so no NSIS string has to hold the whole PATH.
+  Var /GLOBAL pathPrefix
+  StrCpy $pathPrefix ""
+  ${If} $gitExe != "git"
+    ${GetParent} "$gitExe" $R0
+    StrCpy $pathPrefix `set "PATH=$R0;%PATH%" && `
+  ${EndIf}
+  ${If} ${FileExists} "$venvPython"
+    StrCpy $logstring "Installing A-Z+T modules from $INSTDIR\requirements.txt ..."
+    Call logMessage
+    nsExec::ExecToLog `cmd /S /C "$pathPrefix"$venvPython" -c "import utilities.py_modules""`
+    Pop $0
+    ; The stamp must match the sha256 of requirements.txt (lowercase hex)
+    StrCpy $2 ""
+    ClearErrors
+    FileOpen $1 "$envDir\azt_requirements.stamp" r
+    ${IfNot} ${Errors}
+      FileRead $1 $2
+      FileClose $1
+      ${StrTrimNewLines} $2 $2
+    ${EndIf}
+    ClearErrors
+    nsExec::ExecToStack `"$venvPython" -c "import hashlib; print(hashlib.sha256(open('requirements.txt','rb').read()).hexdigest())"`
+    Pop $0
+    Pop $3
+    ${StrTrimNewLines} $3 $3
+    StrCpy $logstring "Requirements stamp: <$2>; requirements.txt sha256: <$3>"
+    Call logMessage
+    ${If} $0 == 0
+    ${AndIf} $2 != ""
+    ${AndIf} $2 S== $3
+      StrCpy $logstring "A-Z+T modules installed."
+      Call logMessage
+    ${Else}
+      StrCpy $logstring "A-Z+T modules not fully installed; A-Z+T will retry when it starts."
+      Call logWarning
+    ${EndIf}
+  ${Else}
+    StrCpy $logstring "Unable to create $envDir; A-Z+T will create it when it starts."
+    Call logWarning
+  ${EndIf}
+  SetOutPath "$EXEDIR"
+
+  ;----------------------------------------------------------------
   ; Successful install of AZT, set up shortcuts
   ;
+  ; Shortcut icons go where they survive the installer being deleted (e.g. from Downloads)
+  Var /GLOBAL iconDir
+  StrCpy $iconDir "$LOCALAPPDATA\Programs\AZT\icons"
+  SetOutPath "$iconDir"
+  File "azt.ico"
+  File "Transcribe-Tone.ico"
+  SetOutPath "$EXEDIR"
+
   StrCpy $logstring  "Creating shortcut to AZT..."
   Call logMessage
   ; Create Shortcut
   StrCpy $0 "$DESKTOP\A-Z+T.lnk"   ; The shortcut name
-  StrCpy $1 "$DESKTOP\azt\main.py" ; The target file
-  StrCpy $logstring "Executable : $EXEDIR\$EXEFILE"
-  Call logMessage
-  StrCpy $2 "$EXEDIR\$EXEFILE"     ; icon file is embedded in installer executable
+  StrCpy $1 "$aztfilename" ; The target file (opened by the .py file association)
+  ; Possible later form, with no console and no restart into the venv:
+  ;   CreateShortcut "$0" "$envDir\Scripts\pythonw.exe" "$\"$aztfilename$\"" "$2" 0
+  StrCpy $2 "$iconDir\azt.ico"
     
   ; Create application shortcut (switch to installation dir to have the correct "start in" target)
   SetOutPath "$INSTDIR"
+  ClearErrors
   CreateShortcut "$0" "$1" "" "$2" 0
   ; Check for errors 
   IfErrors 0 +3
   StrCpy $logstring "ERROR: Failed to create shortcut for AZT."
-  Call logMessage
+  Call logWarning
 
   SetOutPath "$EXEDIR"
 
   StrCpy $logstring  "Creating shortcut to Transcriber tool..."
   Call logMessage
   StrCpy $0 "$DESKTOP\Transcriber.lnk"   ; The shortcut name
-  StrCpy $1 "$transcriberfilename" ; The target file  
-  StrCpy $2 "$EXEDIR\Transcribe-Tone.ico"  ; icon file is embedded in installer executable
+  StrCpy $1 "$venvPython" ; The target file (runs frontend.transcriber as a module)
+  ${IfNot} ${FileExists} "$venvPython"
+    StrCpy $1 "$pythonExe"
+  ${EndIf}
+  StrCpy $2 "$iconDir\Transcribe-Tone.ico"
   ; Create application shortcut (first in installation dir to have the correct "start in" target)
   SetOutPath "$INSTDIR"
-  CreateShortcut "$0" "$1" "" "$2" 0
-  ; Check for errors 
+  ClearErrors
+  CreateShortcut "$0" "$1" "-m frontend.transcriber" "$2" 0
+  ; Check for errors
   IfErrors 0 +3
   StrCpy $logstring "ERROR: Failed to create shortcut for Transcriber."
-  Call logMessage
+  Call logWarning
   SetOutPath "$EXEDIR"
 
   goto AZTEnd
@@ -830,8 +831,9 @@ Section "Charis" charisId
   StrCpy $logstring "${NEWLINE}-----  Charis Installer ----- "
   Call logMessage
 
-  StrCpy $downloadName "Charis"   
-  
+  StrCpy $downloadName "Charis"
+  Call resolveCharisVersion
+
   ; Check if Installer file was already downloaded previously
   StrCpy $logstring "$downloadName FindFirst: $chariszipfile"
   FindFirst $0 $1 "$chariszipfile"
@@ -850,11 +852,11 @@ Section "Charis" charisId
     StrCpy $logstring "Downloading $downloadName $chariszipfile from $charisurl"
     Call logMessage
 
-    inetc::get "$charisurl" "$chariszipfile" /end
+    ${Download} "$charisurl" "$chariszipfile"
     Pop $0 ;Get the return value
     ${If} $0 != 'OK'
       StrCpy $logstring "$0.  Error downloading $downloadName. Skipping Charis installation."
-      Call logMessage
+      Call logWarning
       goto charisEnd   ; skip installation
     ${Else}
       StrCpy $logstring "$downloadName downloaded successfully."
@@ -879,7 +881,7 @@ Section "Charis" charisId
     FileClose $0
 
     StrCpy $logstring "ERROR: Unable to extract $chariszipfile: ${NEWLINE}$ReturnError ${NEWLINE} Skipping Charis installation."
-    Call logMessage
+    Call logWarning
     goto charisEnd   ; skip installation
   ${EndIf}
 
@@ -907,6 +909,10 @@ Section "Charis" charisId
   FindFirst $0 $1 "$TTF"
   StrCpy $logstring "  File search: $0 $1"
   Call logMessage
+  ${If} $1 == ""
+    StrCpy $logstring "ERROR: No .ttf files found in $EXEDIR\$charisfilename"
+    Call logWarning
+  ${EndIf}
 
   ${DoWhile} $1 != ""
   
@@ -928,20 +934,24 @@ continueCharis:
     # Remove the .ttf extension to get NOEXT
     StrCpy $NOEXT $TTFFileName -4
     
-    # Remove 'CharisSIL-' from NOEXT to get FACE
+    # Remove 'Charis-' from NOEXT to get FACE (v7 renamed the family from 'Charis SIL')
     ${If} $NOEXT != ""
-        ${StrRep} $FACE $NOEXT "CharisSIL-" ""
+        ${StrRep} $FACE $NOEXT "Charis-" ""
     ${EndIf}
-    
-    # Replace 'BoldItalic' with 'Bold Italic' in FACE to get FACEMOD
-    StrCpy $FACEMOD $FACE
-    ${StrRep} $FACEMOD $FACEMOD "BoldItalic" "Bold Italic"
+
+    # Put a space before 'Italic' in FACE to get FACEMOD (e.g. 'SemiBold Italic'),
+    # but not at the start ('Italic')
+    ${StrRep} $FACEMOD $FACE "Italic" " Italic"
+    StrCpy $R0 $FACEMOD 1
+    ${If} $R0 == " "
+      StrCpy $FACEMOD $FACEMOD "" 1
+    ${EndIf}
     
     StrCpy $logstring "Installing $TTFFileName as $FACEMOD"
     Call logMessage
     
     # Write to the registry
-    WriteRegStr HKLM "SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts" "Charis SIL $FACEMOD (TrueType)" "$TTFFileName"
+    WriteRegStr HKLM "SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts" "Charis $FACEMOD (TrueType)" "$TTFFileName"
     ifErrors 0 continueCharis2
     StrCpy $logstring "Error writing updating registry for font: $FACEMOD"
     Call logMessage
@@ -950,8 +960,8 @@ continueCharis:
 continueCharis2:
     ; Validate and write to log
     ; To validate directly, copy and paste this into windows prompt:
-    ; reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts" /v "Charis SIL*"
-    ReadRegStr $R9 HKLM "SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts" "Charis SIL $FACEMOD (TrueType)"
+    ; reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts" /v "Charis*"
+    ReadRegStr $R9 HKLM "SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts" "Charis $FACEMOD (TrueType)"
     StrCpy $logstring "Registry read for $FACEMOD: $R9"
     Call logMessage
   
@@ -967,7 +977,7 @@ continueCharis2:
 errorExitCharis:
   ClearErrors
   StrCpy $logstring "Error installing Charis SIL Fonts - they may already be installed."
-  Call logMessage
+  Call logWarning
   
 ;--------------------------------
 charisEnd:
@@ -1008,6 +1018,8 @@ Section "XLingPaper" xlpId
     ${EndIf}
   ${EndIf}
   
+  Call resolveXLingPaperVersion
+
   ;----------------------------------------------------------------
   ; Check if Installer file was already downloaded previously
   FindFirst $0 $1 "$xlpfilename"
@@ -1025,7 +1037,7 @@ Section "XLingPaper" xlpId
     StrCpy $logstring "Downloading XLingPaper from $xlpurl"
     Call logMessage
 
-    inetc::get "$xlpurl" "$xlpfilename" /end
+    ${Download} "$xlpurl" "$xlpfilename"
     Pop $0 ;Get the return value
     ${If} $0 != 'OK'
       StrCpy $logstring "ERROR: $0.  Unable to download XLingPaper."
@@ -1053,15 +1065,15 @@ Section "XLingPaper" xlpId
     Call logMessage
 
     ${If} $0 != 0      
-        StrCpy $logstring "ERROR: XLingPaper $xlpversion Installation failed with return code: $0" 
-        Call logMessage
+        StrCpy $logstring "ERROR: XLingPaper $xlpversion Installation failed with return code: $0"
+        Call logWarning
     ${Else}
       StrCpy $logstring "XLingPaper installed successfully."
       Call logMessage
     ${EndIf}
   ${Else}
     StrCpy $logstring "ERROR: Could not download XLingPaper. Skipping installation."
-    Call logMessage
+    Call logWarning
   ${EndIf}
 ;--------------------------------
 xlpEnd:  
@@ -1103,6 +1115,8 @@ Section "Praat" praatId
     ${EndIf}
   ${EndIf}
   
+  Call resolvePraatVersion
+
   ;----------------------------------------------------------------
   ; Check if Installer file was already downloaded previously
   FindFirst $0 $1 "$praatfilename"
@@ -1120,11 +1134,11 @@ Section "Praat" praatId
     StrCpy $logstring "Downloading Praat from $praaturl"
     Call logMessage
 
-    inetc::get "$praaturl" "$praatfilename" /end
+    ${Download} "$praaturl" "$praatfilename"
     Pop $0 ;Get the return value
     ${If} $0 != 'OK'
       StrCpy $logstring "ERROR: $0.  Unable to download Praat."
-      Call logMessage      
+      Call logWarning      
     ${Else}
       StrCpy $logstring "Praat downloaded successfully."
       Call logMessage  
@@ -1156,7 +1170,7 @@ Section "Praat" praatId
       FileClose $0
 
       StrCpy $logstring "ERROR: Unable to extract $praatfilename: ${NEWLINE}$ReturnError"
-      Call logMessage
+      Call logWarning
 
     ${Else}
 
@@ -1165,23 +1179,18 @@ Section "Praat" praatId
       StrCpy $logstring "Adding $PROGRAMFILES to path so Praat.exe will be found."
       Call logMessage
       
-      ; Set to HKLM
-      ; For info on Envar plugin, see https://nsis.sourceforge.io/EnVar_plug-in
-      EnVar::SetHKLM
-      ; Check for path set in HKLM
-      EnVar::Check "Path" "NULL"
+      ; Add to the HKLM Path (if not there) with PowerShell, since Path can be longer than
+      ; an NSIS string.  Read unexpanded and written back as REG_EXPAND_SZ, to keep %...% entries.
+      nsExec::ExecToStack `powershell -NoProfile -Command "$$k = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SYSTEM\CurrentControlSet\Control\Session Manager\Environment', $$true); $$p = $$k.GetValue('Path', '', 'DoNotExpandEnvironmentNames'); if (($$p -split ';') -notcontains '$PROGRAMFILES') { $$k.SetValue('Path', $$p.TrimEnd(';') + ';$PROGRAMFILES', 'ExpandString') }"`
       Pop $0
-      StrCpy $logstring "EnVar::Read Registry 'Path' RC = $0"
-      Call logMessage
+      Pop $1
       ${If} $0 == 0
-        ; Add to path
-        EnVar::AddValue "Path" "$PROGRAMFILES"
-        Pop $0
         StrCpy $logstring "Registry adding $PROGRAMFILES to Path Environment variable.  RC = $0"
-        Call logMessage        
-      ${Else}
-        StrCpy $logstring "Unable to update registry to add $PROGRAMFILES to Path; Praat may not be recognized."
         Call logMessage
+        SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=${WAITTIME}
+      ${Else}
+        StrCpy $logstring "Unable to update registry to add $PROGRAMFILES to Path; Praat may not be recognized.  RC = $0 $1"
+        Call logWarning
       ${EndIf}
 
     ${EndIf}
@@ -1192,7 +1201,7 @@ SectionEnd
 
 
 ;***************************************************************************************
-Section "Mercurial"  mercurialId
+Section /o "Mercurial"  mercurialId
   
   ;----------------------------------------------------------------
   !insertmacro MUI_HEADER_TEXT_PAGE "${TITLENAME}" "Installing Mercurial...."
@@ -1228,6 +1237,8 @@ Section "Mercurial"  mercurialId
     ${EndIf}
   ${EndIf}
   
+  Call resolveMercurialVersion
+
   ;----------------------------------------------------------------
   ; Check if Installer file was already downloaded previously
   FindFirst $0 $1 "$hgfilename"
@@ -1245,7 +1256,7 @@ Section "Mercurial"  mercurialId
     StrCpy $logstring "Downloading Mercurial from $hgurl"
     Call logMessage
 
-    inetc::get "$hgurl" "$hgfilename" /end
+    ${Download} "$hgurl" "$hgfilename"
     Pop $0 ;Get the return value
     ${If} $0 != 'OK'
       StrCpy $logstring "ERROR: $0.  Unable to download Mercurial."
@@ -1273,15 +1284,15 @@ Section "Mercurial"  mercurialId
     Call logMessage
 
     ${If} $0 != 0      
-        StrCpy $logstring "ERROR: Mercurial $hgversion Installation failed with return code: $0" 
-        Call logMessage
+        StrCpy $logstring "ERROR: Mercurial $hgversion Installation failed with return code: $0"
+        Call logWarning
     ${Else}
       StrCpy $logstring "Mercurial installed successfully."
       Call logMessage
     ${EndIf}
   ${Else}
     StrCpy $logstring "ERROR: Could not download Mercurial. Skipping installation."
-    Call logMessage
+    Call logWarning
   ${EndIf}
 ;--------------------------------  
 mercurialEnd:
@@ -1380,6 +1391,14 @@ Function logMessage
 FunctionEnd
 
 ;-----------------------------------------------------------------
+; logWarning: Function logs $logstring like logMessage, and also keeps it for the
+;             message at the end, for problems that don't stop the installation
+Function logWarning
+  Call logMessage
+  StrCpy $warnings "$warnings- $logstring${NEWLINE}"
+FunctionEnd
+
+;-----------------------------------------------------------------
 ; LocatePrograms: Function to locate a searchstring in a given path
 ; Used primarily to search for existence of programs in the progrm files directories
 ; Inputs are expected on the stack:
@@ -1397,31 +1416,15 @@ Function LocatePrograms
   Pop $searchString
   Pop $searchPath
   StrCpy $logstring "LocatePrograms - searching for file $searchString in $searchPath"
-  Call logMessage 
-  
-  ; Define parameters for locate to search files, directories but not subdirectories
-  StrCpy $R3 `/F=1 /D=1 /G=0 /M=$searchString`  
-  ${locate::Open} $searchPath $R3 $0
-	StrCmp $0 -1 0 locate1
-	StrCpy $logstring "Error getting handle for locate for $searchString"
   Call logMessage
-  goto skiplocate
 
-	locate1:
-	${locate::Find} $0 $1 $2 $3 $4 $5 $6
-	StrCpy $logstring 'locate::Find results: path=$1   -    timestamp=$5'
-	Call logMessage
-
-	${locate::Close} $0
-	${locate::Unload}
-
-  ${If} $1 != ""
-    StrCpy $searchResult $1
+  ; A file or directory directly in $searchPath (not in subdirectories)
+  ${If} ${FileExists} "$searchPath\$searchString"
+    StrCpy $searchResult "$searchPath\$searchString"
     StrCpy $logstring "$searchString found: $searchResult"
-    Call logMessage    
+    Call logMessage
   ${EndIf}
 
-skiplocate:
   Push $searchResult
 
 FunctionEnd
@@ -1699,7 +1702,6 @@ Function gitPullAZT
   ; If the drives are different, switch to the target drive
   StrCpy $logstring "Switching to Drive: $InstDrive"
   Call logMessage
-  ExecWait "$InstDrive"
 
 noDriveChange:
   ; Now change to the target directory
@@ -1713,7 +1715,7 @@ noDriveChange:
     
   StrCpy $tempLogFile "git_error.log"
   ClearErrors
-  ExecWait 'cmd /C $\"$\"$gitExe$\" pull origin$\" 2>$tempLogFile' $0
+  ExecWait 'cmd /C $\"$\"$gitExe$\" pull --depth 1 origin$\" 2>$tempLogFile' $0
   StrCpy $logstring "   Return value: $0"
   Call logMessage
   ${If} $0 != 0
@@ -1724,7 +1726,7 @@ noDriveChange:
     FileClose $0
 
     StrCpy $logstring "git pull origin returned error: ${NEWLINE}$ReturnError"
-    Call logMessage
+    Call logWarning
   ${EndIf}
 
   ; Switch back to the installation drive and directory
@@ -1734,7 +1736,6 @@ noDriveChange:
   ; If the drives are different, switch to the target drive
   StrCpy $logstring "Switching to Drive: $ExeDrive"
   Call logMessage
-  ExecWait "$ExeDrive"
 
 noDriveChange2:
   
@@ -1940,6 +1941,376 @@ skipPy:
 FunctionEnd
 
 ;-----------------------------------------------------------------
+; downloadFile: Function downloads $dlUrl to $dlFile with Windows' own curl.exe
+;               (use the ${Download} macro).  Leaves registers unchanged, and
+;               pushes "OK", or an error message (and deletes any partial file).
+Function downloadFile
+  Push $0
+  Push $1
+  nsExec::ExecToStack `curl.exe -f -s -S -L -o "$dlFile" "$dlUrl"`
+  Pop $0  ; return code
+  Pop $1  ; output
+  ${If} $0 == 0
+    StrCpy $0 "OK"
+  ${Else}
+    Delete "$dlFile"
+    StrCpy $0 "Download error $0: $1"
+  ${EndIf}
+  Pop $1
+  Exch $0
+FunctionEnd
+
+;-----------------------------------------------------------------
+; setProxy: Function sets HTTPS_PROXY and HTTP_PROXY for this installer, and so for
+;           everything it starts (curl, git, pip, A-Z+T), from the Windows proxy
+;           settings (including automatic configuration scripts): none of those read
+;           the Windows settings themselves.  Proxy variables already set are kept.
+;           The elevated copy is given the user's proxy (/PROXY=, see componentsLeave),
+;           since it may run as another account, with other settings.
+Function setProxy
+  Var /GLOBAL proxy
+  StrCpy $proxy ""
+  ReadEnvStr $0 HTTPS_PROXY
+  ${If} $0 != ""
+    StrCpy $logstring "Using the HTTPS_PROXY already set: $0"
+    Call logMessage
+    StrCpy $proxy $0
+    Return
+  ${EndIf}
+  ${If} $adminsteps == "1"
+    ${GetParameters} $R0
+    ClearErrors
+    ${GetOptions} $R0 "/PROXY=" $proxy
+    ClearErrors
+  ${Else}
+    nsExec::ExecToStack `powershell -NoProfile -Command "$$u = [Uri]'https://github.com/'; $$p = [Net.WebRequest]::GetSystemWebProxy().GetProxy($$u); if ($$p.AbsoluteUri -ne $$u.AbsoluteUri) { $$p.AbsoluteUri }"`
+    Pop $0
+    Pop $1
+    ${StrTrimNewLines} $1 $1
+    ${If} $0 == 0
+      StrCpy $proxy $1
+    ${EndIf}
+  ${EndIf}
+  ${If} $proxy != ""
+    System::Call 'Kernel32::SetEnvironmentVariable(t "HTTPS_PROXY", t "$proxy")'
+    System::Call 'Kernel32::SetEnvironmentVariable(t "HTTP_PROXY", t "$proxy")'
+    StrCpy $logstring "Using the Windows proxy setting: $proxy"
+  ${Else}
+    StrCpy $logstring "No proxy set in Windows; connecting directly."
+  ${EndIf}
+  Call logMessage
+FunctionEnd
+
+;-----------------------------------------------------------------
+; findPythonMinor: Function sets $pythonExe to the full path of an installed
+;                  python $pythonminor (any patch), from the registry entries every
+;                  python.org install writes (PEP 514), or to "" if there is none.
+;                  Works right after installing, when python isn't on the path yet.
+Function findPythonMinor
+  StrCpy $pythonExe ""
+  SetRegView 64
+  ReadRegStr $pythonExe HKCU "Software\Python\PythonCore\$pythonminor\InstallPath" "ExecutablePath"
+  ${If} $pythonExe == ""
+    ReadRegStr $pythonExe HKLM "Software\Python\PythonCore\$pythonminor\InstallPath" "ExecutablePath"
+  ${EndIf}
+  SetRegView lastused
+  ClearErrors
+  ${If} $pythonExe != ""
+  ${AndIfNot} ${FileExists} "$pythonExe"
+    StrCpy $pythonExe ""
+  ${EndIf}
+  StrCpy $logstring "Python $pythonminor from registry: <$pythonExe>"
+  Call logMessage
+FunctionEnd
+
+;-----------------------------------------------------------------
+; resolvePythonVersion: Function sets $pythonversion, $pythonfilename and $pythonurl
+;     to the newest python $pythonminor release with a 64-bit Windows installer.
+;     A minor that gets security fixes only has no installer for its latest release;
+;     then, if PYTHONMINORS allows, the next minor up is tried (and $pythonminor
+;     changed to it).  If none has
+;     an installer, walk back down the first minor's releases to the newest that has
+;     one.  Offline, use a python $pythonminor installer already beside this one.
+;     $pythonversion is "" if nothing is found.
+Function resolvePythonVersion
+  Var /GLOBAL firstMinor
+  Var /GLOBAL firstLatest
+  Var /GLOBAL latestVersion
+  StrCpy $firstMinor $pythonminor
+  StrCpy $firstLatest ""
+
+  ${For} $R5 1 ${PYTHONMINORS}
+    Call readLatestPythonPage
+    ${If} $R5 == 1
+      StrCpy $firstLatest $latestVersion
+    ${EndIf}
+    ${If} $pythonversion != ""
+    ${OrIf} $latestVersion == ""  ; no such release (or offline)
+    ${OrIf} $R5 == ${PYTHONMINORS}
+      ${Break}
+    ${EndIf}
+    ; Security fixes only: try the next minor up
+    StrCpy $R0 $pythonminor 2     ; major and dot, e.g. "3."
+    StrCpy $R1 $pythonminor "" 2  ; minor number, e.g. "13"
+    IntOp $R1 $R1 + 1
+    StrCpy $pythonminor "$R0$R1"
+    StrCpy $logstring "No Windows installer for python $latestVersion; trying python $pythonminor"
+    Call logMessage
+  ${Next}
+
+  ${If} $pythonversion == ""
+    StrCpy $pythonminor $firstMinor
+  ${EndIf}
+
+  ; Walk back down the patches of the first minor
+  ${If} $pythonversion == ""
+  ${AndIf} $firstLatest != ""
+    StrLen $R0 "$pythonminor."
+    StrCpy $R1 $firstLatest "" $R0  ; patch number
+    ${DoWhile} $R1 >= 0
+      StrCpy $R2 "$pythonminor.$R1"
+      ; HEAD request only; -f makes a missing file an error
+      nsExec::ExecToStack `curl.exe -f -s -I -L -o NUL "https://www.python.org/ftp/python/$R2/python-$R2-amd64.exe"`
+      Pop $R3
+      Pop $R4
+      StrCpy $logstring "python-$R2-amd64.exe on python.org: curl RC = $R3"
+      Call logMessage
+      ${If} $R3 == "0"
+        StrCpy $pythonversion $R2
+        ${Break}
+      ${EndIf}
+      IntOp $R1 $R1 - 1
+    ${Loop}
+  ${EndIf}
+
+  ; Offline: an installer already beside this one, e.g. python-3.13.15-amd64.exe
+  ${If} $pythonversion == ""
+    FindFirst $R0 $R1 "python-$pythonminor.*-amd64.exe"
+    FindClose $R0
+    ClearErrors
+    ${If} $R1 != ""
+      StrCpy $pythonversion $R1 -10 7  ; strip "python-" and "-amd64.exe"
+      StrCpy $logstring "Using python installer found beside this one: $R1"
+      Call logMessage
+    ${EndIf}
+  ${EndIf}
+
+  ${If} $pythonversion != ""
+    StrCpy $pythonfilename "python-$pythonversion-amd64.exe"
+    StrCpy $pythonurl "https://www.python.org/ftp/python/$pythonversion/$pythonfilename"
+    StrCpy $logstring "Python release to install: $pythonversion"
+    Call logMessage
+  ${EndIf}
+FunctionEnd
+
+;-----------------------------------------------------------------
+; readLatestPythonPage: Function reads python.org's latest-release page for $pythonminor.
+;     Sets $latestVersion to the release it is for ("" if none, or offline), and
+;     $pythonversion to the same only if the page links its 64-bit Windows installer.
+Function readLatestPythonPage
+  StrCpy $latestVersion ""
+  StrCpy $pythonversion ""
+  Delete "python_latest.html"
+  ${Download} "https://www.python.org/downloads/latest/python$pythonminor/" "python_latest.html"
+  Pop $R0
+  StrCpy $logstring "python.org latest python$pythonminor page: $R0"
+  Call logMessage
+  ${If} $R0 != "OK"
+    Return
+  ${EndIf}
+
+  FileOpen $R1 "python_latest.html" r
+  ${Do}
+    ClearErrors
+    FileRead $R1 $R2
+    ${If} ${Errors}
+      ${Break}
+    ${EndIf}
+    ; Title is "Python Release Python 3.13.15 | Python.org"
+    ${If} $latestVersion == ""
+      ${StrStr} $R3 $R2 "Release Python $pythonminor."
+      ${If} $R3 != ""
+        StrCpy $R3 $R3 "" 15  ; strip "Release Python "
+        ${StrLoc} $R4 $R3 " " ">"
+        StrCpy $latestVersion $R3 $R4
+      ${EndIf}
+    ${EndIf}
+    ${If} $latestVersion != ""
+      ${StrStr} $R3 $R2 "/python-$latestVersion-amd64.exe"
+      ${If} $R3 != ""
+        StrCpy $pythonversion $latestVersion
+        ${Break}
+      ${EndIf}
+    ${EndIf}
+  ${Loop}
+  FileClose $R1
+  ClearErrors
+  StrCpy $logstring "Latest python $pythonminor release: <$latestVersion>; with Windows installer: <$pythonversion>"
+  Call logMessage
+FunctionEnd
+
+;-----------------------------------------------------------------
+; resolveCharisVersion: Function asks GitHub for the latest Charis release and, if it
+;     answers, sets $charisversion, $charisfilename, $chariszipfile and $charisurl for it.
+;     Otherwise they keep the values set in .onInit.
+Function resolveCharisVersion
+  StrCpy $tagUrl "https://api.github.com/repos/silnrsi/font-charis/releases/latest"
+  Call readLatestTag
+  ${If} $latestTag != ""
+    StrCpy $charisversion $latestTag
+    StrCpy $charisfilename "Charis-$charisversion"
+    StrCpy $chariszipfile "$charisfilename.zip"
+    StrCpy $charisurl "https://github.com/silnrsi/font-charis/releases/download/v$charisversion/$chariszipfile"
+  ${EndIf}
+  StrCpy $logstring "Charis release to install: $charisversion from $charisurl"
+  Call logMessage
+FunctionEnd
+
+;-----------------------------------------------------------------
+; resolveGitVersion: Function asks GitHub for the latest Git for Windows release and, if
+;     it answers, sets $gitversion, $gitfilename and $giturl for it.  Otherwise they
+;     keep the values set in .onInit.  Tag "2.55.0.windows.5" has the installer
+;     Git-2.55.0.5-64-bit.exe; a ".windows.1" tag has Git-2.55.0-64-bit.exe.
+Function resolveGitVersion
+  StrCpy $tagUrl "https://api.github.com/repos/git-for-windows/git/releases/latest"
+  Call readLatestTag
+  ${StrStr} $R0 $latestTag ".windows."
+  ${If} $R0 != ""
+    StrLen $R1 $R0
+    StrCpy $R2 $latestTag -$R1  ; "2.55.0"
+    StrCpy $R3 $R0 "" 9         ; "5" (after ".windows.")
+    StrCpy $gitversion $R2
+    ${If} $R3 == "1"
+      StrCpy $gitfilename "Git-$R2-64-bit.exe"
+    ${Else}
+      StrCpy $gitfilename "Git-$R2.$R3-64-bit.exe"
+    ${EndIf}
+    StrCpy $giturl "https://github.com/git-for-windows/git/releases/download/v$latestTag/$gitfilename"
+  ${EndIf}
+  StrCpy $logstring "Git release to install: $gitversion from $giturl"
+  Call logMessage
+FunctionEnd
+
+;-----------------------------------------------------------------
+; resolvePraatVersion: Function asks GitHub for the latest Praat release and, if it
+;     answers, sets $praatversion, $praatfilename and $praaturl for it.  Otherwise they
+;     keep the values set in .onInit.  Tag "7.0.02" has praat7002_win-x64v1.zip
+;     (x64v1 runs on any 64-bit Intel/AMD CPU; x64v3 needs AVX2).
+Function resolvePraatVersion
+  StrCpy $tagUrl "https://api.github.com/repos/praat/praat.github.io/releases/latest"
+  Call readLatestTag
+  ${If} $latestTag != ""
+    ${StrRep} $praatversion $latestTag "." ""
+    StrCpy $praatfilename "praat$praatversion_win-x64v1.zip"
+    StrCpy $praaturl "https://github.com/praat/praat.github.io/releases/download/v$latestTag/$praatfilename"
+  ${EndIf}
+  StrCpy $logstring "Praat release to install: $praatversion from $praaturl"
+  Call logMessage
+FunctionEnd
+
+;-----------------------------------------------------------------
+; resolveMercurialVersion: Function reads Mercurial's latest.dat and, if it can, sets
+;     $hgversion, $hgfilename and $hgurl to its x64 .exe installer.  Otherwise they
+;     keep the values set in .onInit.  Each line is tab-separated: priority, version,
+;     platform pattern, URL, description.
+Function resolveMercurialVersion
+  Delete "hg_latest.dat"
+  ${Download} "https://www.mercurial-scm.org/release/windows/latest.dat" "hg_latest.dat"
+  Pop $R0
+  StrCpy $logstring "Mercurial latest.dat: $R0"
+  Call logMessage
+  ${If} $R0 == "OK"
+    FileOpen $R1 "hg_latest.dat" r
+    ${Do}
+      ClearErrors
+      FileRead $R1 $R2
+      ${If} ${Errors}
+        ${Break}
+      ${EndIf}
+      ${StrStr} $R3 $R2 "-x64.exe"
+      ${StrStr} $R4 $R2 "https://"
+      ${If} $R3 != ""
+      ${AndIf} $R4 != ""
+        ${StrLoc} $R5 $R4 "$\t" ">"
+        StrCpy $hgurl $R4 $R5              ; URL up to the next tab
+        ${StrStr} $R6 $hgurl "windows/"
+        StrCpy $hgfilename $R6 "" 8        ; e.g. Mercurial-7.1.2-x64.exe
+        StrCpy $hgversion $hgfilename -8 10  ; strip "Mercurial-" and "-x64.exe"
+        ${Break}
+      ${EndIf}
+    ${Loop}
+    FileClose $R1
+    ClearErrors
+  ${EndIf}
+  StrCpy $logstring "Mercurial release to install: $hgversion from $hgurl"
+  Call logMessage
+FunctionEnd
+
+;-----------------------------------------------------------------
+; resolveXLingPaperVersion: Function asks GitHub for the latest XLingPaper release and,
+;     if it answers, sets $xlpversion, $xlpfilename and $xlpurl for it.  Otherwise they
+;     keep the values set in .onInit.  Tag "3.19.3" has the full Windows installer
+;     XLingPaper3.19.3.0XXEPersonalEditionFullSetup.exe.
+Function resolveXLingPaperVersion
+  StrCpy $tagUrl "https://api.github.com/repos/sillsdev/XLingPap/releases/latest"
+  Call readLatestTag
+  ${If} $latestTag != ""
+    StrCpy $xlpversion $latestTag
+    StrCpy $xlpfilename "XLingPaper$xlpversion.0XXEPersonalEditionFullSetup.exe"
+    StrCpy $xlpurl "https://github.com/sillsdev/XLingPap/releases/download/v$latestTag/$xlpfilename"
+  ${EndIf}
+  StrCpy $logstring "XLingPaper release to install: $xlpversion from $xlpurl"
+  Call logMessage
+FunctionEnd
+
+;-----------------------------------------------------------------
+; readLatestTag: Function downloads GitHub's latest-release JSON from $tagUrl and sets
+;     $latestTag to its tag_name without the leading "v" ("" if none, or offline).
+Function readLatestTag
+  StrCpy $latestTag ""
+  Delete "latest_release.json"
+  ${Download} "$tagUrl" "latest_release.json"
+  Pop $R0
+  StrCpy $logstring "GitHub latest release $tagUrl: $R0"
+  Call logMessage
+  ${If} $R0 != "OK"
+    Return
+  ${EndIf}
+
+  ; Find "tag_name": "v7.000".  The JSON may be one line longer than an NSIS string,
+  ; so read it in pieces, each searched together with the end of the one before.
+  StrCpy $R5 ""  ; tag found
+  StrCpy $R6 ""  ; end of the previous piece
+  FileOpen $R1 "latest_release.json" r
+  ${Do}
+    ClearErrors
+    FileRead $R1 $R2 512
+    ${If} ${Errors}
+      ${Break}
+    ${EndIf}
+    StrCpy $R2 "$R6$R2"
+    StrCpy $R6 $R2 "" -128
+    ${StrStr} $R3 $R2 '"tag_name"'
+    ${If} $R3 != ""
+      StrCpy $R3 $R3 "" 10  ; strip '"tag_name"'
+      ${StrStr} $R3 $R3 '"v'
+      ${If} $R3 != ""
+        StrCpy $R3 $R3 "" 2  ; strip '"v'
+        ${StrLoc} $R4 $R3 '"' ">"
+        ${If} $R4 != ""
+          StrCpy $R5 $R3 $R4
+          ${Break}
+        ${EndIf}
+      ${EndIf}
+    ${EndIf}
+  ${Loop}
+  FileClose $R1
+  ClearErrors
+
+  StrCpy $latestTag $R5
+FunctionEnd
+
+;-----------------------------------------------------------------
 ; getGitPath: Function searches for git executable.
 ;             If not found, runs a separate windows shell 
 ;             to pull the path from the environment variable
@@ -2097,13 +2468,98 @@ ${EndIf}
 FunctionEnd
 
 ;-----------------------------------------------------------------
-; .onInstSuccess - Executes at the end of a successful installation 
-Function .onInstSuccess
-    StrCpy $logstring "Installation completed successfully.${NEWLINE}${NEWLINE}A-Z+T will be launched now to finish configuration."
-    Call logMessage    
-    MessageBox MB_OK $logstring
-    StrCpy $logstring  "Doing first run of A-Z+T, to make sure modules are installed..."
+; skipComponentsIfAdmin: the elevated copy was already told what to install
+Function skipComponentsIfAdmin
+  ${If} $adminsteps == "1"
+    Abort
+  ${EndIf}
+FunctionEnd
+
+;-----------------------------------------------------------------
+; componentsLeave: machine-wide sections run in the elevated copy (runAdminSteps),
+;                  so pass it the optional ones selected, and don't run them here
+Function componentsLeave
+  StrCpy $adminArgs ""
+  ${If} ${SectionIsSelected} ${xlpId}
+    StrCpy $adminArgs "$adminArgs /XLP"
+  ${EndIf}
+  ${If} ${SectionIsSelected} ${praatId}
+    StrCpy $adminArgs "$adminArgs /PRAAT"
+  ${EndIf}
+  ${If} ${SectionIsSelected} ${mercurialId}
+    StrCpy $adminArgs "$adminArgs /HG"
+  ${EndIf}
+  ${If} $proxy != ""
+    StrCpy $adminArgs "$adminArgs /PROXY=$proxy"
+  ${EndIf}
+  SectionSetFlags ${charisId} 0
+  SectionSetFlags ${xlpId} 0
+  SectionSetFlags ${praatId} 0
+  SectionSetFlags ${mercurialId} 0
+FunctionEnd
+
+;-----------------------------------------------------------------
+; runAdminSteps: Function runs this installer again, elevated, with /ADMINSTEPS,
+;                to do only the machine-wide steps (Git, Charis, LongPathsEnabled,
+;                and the optional programs selected).  Everything per-user (python,
+;                A-Z+T, its modules, shortcuts) stays in this, the user's, process,
+;                so it goes to the right user even if another account gives admin rights.
+Function runAdminSteps
+  StrCpy $logstring "Running machine-wide steps as administrator: $EXEPATH /ADMINSTEPS$adminArgs"
+  Call logMessage
+  Delete "$EXEDIR\${INSTALLERNAME}_admin_warnings.txt"
+  ClearErrors
+  ExecShellWait "runas" "$EXEPATH" "/ADMINSTEPS$adminArgs"
+  ${If} ${Errors}
+    StrCpy $logstring "Administrator steps did not run (permission not given?).  Installation aborted."
     Call logMessage
+    MessageBox MB_OK|MB_ICONEXCLAMATION $logstring /SD IDOK
+    Abort
+  ${EndIf}
+  StrCpy $logstring "Machine-wide steps finished; details are in ${INSTALLERNAME}_admin.log"
+  Call logMessage
+
+  ; Problems the elevated copy reported (it closes itself, so it can't show them)
+  ClearErrors
+  FileOpen $0 "$EXEDIR\${INSTALLERNAME}_admin_warnings.txt" r
+  ${IfNot} ${Errors}
+    ${Do}
+      FileRead $0 $1
+      ${If} ${Errors}
+        ${Break}
+      ${EndIf}
+      StrCpy $warnings "$warnings$1"
+    ${Loop}
+    FileClose $0
+    StrCpy $logstring "Problems in the machine-wide steps:${NEWLINE}$warnings"
+    Call logMessage
+  ${EndIf}
+  ClearErrors
+FunctionEnd
+
+;-----------------------------------------------------------------
+; writeAdminWarnings: Function, in the elevated copy, hands $warnings to the user's
+;                     installer (read back in runAdminSteps)
+Function writeAdminWarnings
+  ${If} $warnings != ""
+    FileOpen $0 "$EXEDIR\${INSTALLERNAME}_admin_warnings.txt" w
+    FileWrite $0 $warnings
+    FileClose $0
+  ${EndIf}
+FunctionEnd
+
+;-----------------------------------------------------------------
+; .onInstSuccess - Executes at the end of a successful installation
+Function .onInstSuccess
+    ${If} $adminsteps == "1"
+      ; Elevated copy: the user's installer continues from here
+      StrCpy $logstring "Machine-wide steps completed."
+      Call logMessage
+      Call writeAdminWarnings
+      FileClose $log0
+      Return
+    ${EndIf}
+    ; (The summary and the launch are on the finish page: see finishPre and launchAZT)
 
     ; File cleanup
     Delete "git_error.log"
@@ -2113,12 +2569,49 @@ Function .onInstSuccess
     Delete "gitpath.txt"
     Delete "getpythonpath.cmd"
     Delete "pythonpath.txt"
+    Delete "python_latest.html"
+    Delete "python_head.txt"
+    Delete "latest_release.json"
+    Delete "hg_latest.dat"
+    Delete "git_version.txt"
+    Delete "python_version.txt"
+    Delete "$EXEDIR\${INSTALLERNAME}_admin_warnings.txt"
     
     ClearErrors
-    StrCpy $logstring  "ExecShell open $pythonExe $aztfilename SW_SHOW"
-    Call logMessage
     FileClose $log0   ; close the installation log file
-    ExecShell "open" "$pythonExe" "$aztfilename" SW_SHOW
+FunctionEnd
+
+;-----------------------------------------------------------------
+; finishPre: Function sets the finish page text, and first lists any problems.
+;            The elevated copy has no finish page (it closes itself).
+Function finishPre
+  ${If} $adminsteps == "1"
+    Abort
+  ${EndIf}
+  ${If} $warnings != ""
+    StrCpy $logstring "A-Z+T is installed, but with these problems:${NEWLINE}${NEWLINE}$warnings${NEWLINE}Details are in $EXEDIR\$logfile."
+    Call logMessage
+    MessageBox MB_OK|MB_ICONEXCLAMATION $logstring
+    StrCpy $finishText "${APPNAME} is installed in $INSTDIR, but with problems; they are listed in $EXEDIR\$logfile.${NEWLINE}${NEWLINE}Click Finish to close this installer."
+  ${Else}
+    StrCpy $logstring "Installation completed successfully."
+    Call logMessage
+    StrCpy $finishText "${APPNAME} is installed in $INSTDIR.${NEWLINE}${NEWLINE}Click Finish to close this installer."
+  ${EndIf}
+FunctionEnd
+
+;-----------------------------------------------------------------
+; launchAZT: Function runs A-Z+T, if its box on the finish page is left checked.
+;            Its first run finishes its own setup (and retries anything that failed).
+Function launchAZT
+  StrCpy $logstring  "Launching: $pathPrefix$pythonExe $aztfilename"
+  Call logMessage
+  ${If} $pathPrefix == ""
+    ExecShell "open" "$pythonExe" "$\"$aztfilename$\"" SW_SHOW
+  ${Else}
+    ; With Git's folder on PATH (see the AZT section)
+    Exec `cmd /S /C "$pathPrefix"$pythonExe" "$aztfilename""`
+  ${EndIf}
 FunctionEnd
 
 ;-----------------------------------------------------------------
@@ -2127,6 +2620,10 @@ FunctionEnd
 Function .onInstFailed
   StrCpy $logstring  "${APPNAME} installation aborted."
   Call logMessage
+  ${If} $adminsteps == "1"
+    StrCpy $warnings "- Machine-wide steps were aborted (see ${INSTALLERNAME}_admin.log).${NEWLINE}$warnings"
+    Call writeAdminWarnings
+  ${EndIf}
   FileClose $log0   ; close the installation log file
   MessageBox MB_YESNO "${APPNAME} installation aborted.  View log file?" IDNO NoReadme
       Exec "notepad.exe $logfile"
@@ -2138,13 +2635,21 @@ FunctionEnd
 ;     Use it to initialize features and variables
 Function .onInit
 
-  # Define paths  
+  ; /ADMINSTEPS marks the elevated copy started by runAdminSteps
+  ${GetParameters} $R0
+  ClearErrors
+  ${GetOptions} $R0 "/ADMINSTEPS" $R1
+  ${IfNot} ${Errors}
+    StrCpy $adminsteps "1"
+  ${EndIf}
 
-  StrCpy $pythonversion "3.13.7"
-  StrCpy $pythonfilename "python-$pythonversion-amd64.exe"
-  StrCpy $pythonsize "^(27.47348 Megabyte^(s^); 28808040 bytes^)"
-  StrCpy $pythonurl "https://www.python.org/ftp/python/$pythonversion/$pythonfilename"
+  # Define paths
 
+  ; Only the python minor is named here; the release is found at install time
+  ; (see resolvePythonVersion)
+  StrCpy $pythonminor "3.13"
+
+  ; Used only if GitHub can't be asked for the latest release (see resolveGitVersion)
   StrCpy $gitversion "2.51.2"
   StrCpy $gitfilename "Git-$gitversion-64-bit.exe"
   StrCpy $gitsize "^(68.1 MB; 68,131,584 bytes^)"
@@ -2152,36 +2657,42 @@ Function .onInit
 
   StrCpy $aztRepoName "azt.git"
   StrCpy $aztRepoURL "https://github.com/kent-rasmussen/azt.git"
+  ; Existing desktop installs are updated in place; new installs go to InstallDir
+  ${If} ${FileExists} "$DESKTOP\azt\main.py"
+    StrCpy $INSTDIR "$DESKTOP\azt"
+  ${EndIf}
   StrCpy $aztfilename "$INSTDIR\main.py"
-  StrCpy $transcriberfilename "$INSTDIR\transcriber.py"
 
-  StrCpy $praatversion "6446"
-  StrCpy $praatfilename "praat$praatversion_win-intel64.zip"
-  StrCpy $praaturl "https://www.fon.hum.uva.nl/praat/$praatfilename"
+  ; Used only if GitHub can't be asked for the latest release (see resolvePraatVersion)
+  StrCpy $praatversion "7002"
+  StrCpy $praatfilename "praat$praatversion_win-x64v1.zip"
+  StrCpy $praaturl "https://github.com/praat/praat.github.io/releases/download/v7.0.02/$praatfilename"
 
-  StrCpy $xlpversion "3-17-0"
-  StrCpy $xlpfilename "XLingPaper$xlpversionXXEPersonalEditionFullSetup.exe"
-  StrCpy $xlpurl "https://software.sil.org/downloads/r/xlingpaper/$xlpfilename"
+  ; Used only if GitHub can't be asked for the latest release (see resolveXLingPaperVersion)
+  StrCpy $xlpversion "3.19.3"
+  StrCpy $xlpfilename "XLingPaper$xlpversion.0XXEPersonalEditionFullSetup.exe"
+  StrCpy $xlpurl "https://github.com/sillsdev/XLingPap/releases/download/v$xlpversion/$xlpfilename"
 
-  StrCpy $hgversion "6.0"
+  ; Used only if latest.dat can't be read (see resolveMercurialVersion)
+  StrCpy $hgversion "7.1.2"
   StrCpy $hgfilename "Mercurial-$hgversion-x64.exe"
   StrCpy $hgurl "https://www.mercurial-scm.org/release/windows/$hgfilename"
 
+  ; Used only if GitHub can't be asked for the latest release (see resolveCharisVersion)
   StrCpy $charisversion "7.000"
-  StrCpy $charisfilename "CharisSIL-$charisversion"
-  StrCpy $chariszipfile "CharisSIL-$charisversion.zip"
+  StrCpy $charisfilename "Charis-$charisversion"
+  StrCpy $chariszipfile "$charisfilename.zip"
   StrCpy $charisurl "https://software.sil.org/downloads/r/charis/$chariszipfile"
-
+  
   StrCpy $filepath $EXEDIR  
   ; Destination directory for temporary installation files (OUTDIR)
   SetOutPath $filepath
 
-  ; Include icons for setting in shortcuts - must come after SetOutPath is defined
-  File "azt.ico"
-  File "Transcribe-Tone.ico"
-  
   ; Set output installation log file name. (Ref: logMessage function)
-  StrCpy $logfile "${INSTALLERNAME}.log"  
+  StrCpy $logfile "${INSTALLERNAME}.log"
+  ${If} $adminsteps == "1"
+    StrCpy $logfile "${INSTALLERNAME}_admin.log"
+  ${EndIf}
   FileOpen $log0 $logfile w
   ifErrors 0 continue_init
     StrCpy $logstring "Unable to open the installation log file.  Make sure you have write access to the installation directory: $EXEDIR"
@@ -2195,7 +2706,9 @@ Function .onInit
 
   StrCpy $0 $DESKTOP
   StrCpy $logstring "DESKTOP is $DESKTOP"
-  Call logMessage 
+  Call logMessage
+
+  Call setProxy
 
   # set sections as selected and read-only
   IntOp $0 ${SF_SELECTED} | ${SF_RO}  
@@ -2204,10 +2717,40 @@ Function .onInit
   SectionSetFlags ${aztId} $0
   SectionSetFlags ${charisId} $0
 
+  ${If} $adminsteps == "1"
+    ; Elevated copy: machine-wide sections only, optional ones as passed by runAdminSteps
+    SectionSetFlags ${pythonId} 0
+    SectionSetFlags ${aztId} 0
+    ${GetParameters} $R0
+    ClearErrors
+    ${GetOptions} $R0 "/XLP" $R1
+    ${If} ${Errors}
+      SectionSetFlags ${xlpId} 0
+    ${EndIf}
+    ClearErrors
+    ${GetOptions} $R0 "/PRAAT" $R1
+    ${If} ${Errors}
+      SectionSetFlags ${praatId} 0
+    ${EndIf}
+    ClearErrors
+    ${GetOptions} $R0 "/HG" $R1
+    ${If} ${Errors}
+      SectionSetFlags ${mercurialId} 0
+    ${EndIf}
+  ${Else}
+    SectionSetFlags ${longPathsId} 0
+  ${EndIf}
+
   ; Check if the installer is running with admin rights
   StrCpy $logstring "-----  Starting Installation ----- ${NEWLINE}Installing from $filepath"
   Call logMessage
-  
+
+  ; Only the elevated copy needs admin rights
+  ${If} $adminsteps != "1"
+    StrCpy $withadmin "0"
+    Return
+  ${EndIf}
+
   !insertmacro MUI_HEADER_TEXT_PAGE "${TITLENAME}"  "Test / Set Admin Mode..."
   StrCpy $logstring "${NEWLINE}-----  Test / Set Admin Mode ----- "
   Call logMessage

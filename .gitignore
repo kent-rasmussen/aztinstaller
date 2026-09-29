@@ -5,6 +5,7 @@
 *.log
 *.cmd
 *.txt
+*.pdf
 Charis*
 
 # Ignore all .exe files
