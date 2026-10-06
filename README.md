@@ -39,6 +39,10 @@ The last page says where A-Z+T was installed (and whether there were problems), 
 
 The installation logs AZT_Installer.log (user steps) and AZT_Installer_admin.log (machine-wide steps) will be in the same directory as AZT_Installer.exe.  This log documents the installation steps in detail and may be useful for troubleshooting any installation issues.
 
+The package and supporting-repository bootstrap also writes `AZT_Installer_bootstrap.log` beside the executable. It includes the full combined command output, start time, elapsed time, and exit code, and appends on retries. Open it during a long download to follow progress. The installer displays a heartbeat every 30 seconds without command output; individual window entries are shortened to 800 characters, while the transcript retains the full text. Python output is unbuffered, but pip may still collect its own output before reporting it. Bootstrap errors are included in the final warning summary, and the requirements stamp must match before modules are reported as installed.
+
+If the window disappears unexpectedly, compare the bootstrap transcript with the main log. A missing bootstrap exit marker identifies an interrupted command or runner; a recorded exit followed by no main-log return message points to the installer side. Neither log can guarantee a diagnostic for a forced termination or native crash. The main log remains open through the Finish page and application launch; launching the application does not verify that it subsequently starts successfully.
+
 If the installer fails, it is safe to restart it.  If the failure was due to not being able to locate python or git, often times the second pass will pick up the new path and continue the installation successfully.   Re-running the installer multiple times does not create any problems as the only change made will be to refresh the azt code from the git repository.
 
 

@@ -96,6 +96,8 @@
   Var /GLOBAL adminArgs
   var /GLOBAL logfile
   Var /GLOBAL log0
+  Var /GLOBAL bootstrapLog
+  Var /GLOBAL bootstrapResult
   var /GLOBAL logstring
   ; Problems that don't stop the installation, for the message at the end (see logWarning)
   Var /GLOBAL warnings
@@ -649,6 +651,9 @@ ${If} $0 != 0
   abort
 ${EndIf}
 
+Var /GLOBAL cloneRetried
+StrCpy $cloneRetried "0"
+cloneAZT:
 StrCpy $cmd `$\"$gitExe$\" clone --depth 1 $azt $\"$INSTDIR$\"`
 StrCpy $logstring "Executing $cmd ..."
 Call logMessage
@@ -656,6 +661,7 @@ ClearErrors
 ; Use ExecToStack instead of ExecWait to prevent the windows command prompt from showing
 nsExec::ExecToStack 'cmd /C $\"$cmd$\" 2>$tempLogFile'
 Pop $0
+Pop $1 ; Discard captured output as well as the exit code
 StrCpy $logstring "   Return value: $0"
 Call logMessage
 ${If} $0 != 0
@@ -666,10 +672,29 @@ ${If} $0 != 0
   Call logMessage
 ; If the error says repo already exists, just update it.  
   ${StrStr} $2 $ReturnError "exists and is not an empty directory"
-  ${If} $2 != "" 
+  ${If} $2 != ""
+  ${AndIf} $cloneRetried == "0"
     StrCpy $logstring "AZT Repo already exists, updating..."
     Call logMessage  
     Call gitPullAZT
+    Pop $0
+    ${If} $0 != 0
+      StrCpy $logstring "Git pull failed; removing $INSTDIR and retrying a shallow clone."
+      Call logMessage
+      ; gitPullAZT has restored $EXEDIR; leave the repo before removing it.
+      SetOutPath "$EXEDIR"
+      ClearErrors
+      RMDir /r "$INSTDIR"
+      ${If} ${Errors}
+        ; Windows may leave an empty directory behind (for example, if it is open).
+        ; Let Git decide whether the destination is usable; the retry is limited to one.
+        StrCpy $logstring "Removal of $INSTDIR reported an error; trying the clone in case the remaining directory is empty."
+        Call logMessage
+      ${EndIf}
+      ClearErrors
+      StrCpy $cloneRetried "1"
+      Goto cloneAZT
+    ${EndIf}
   ${Else}
     ; Display the error message
     StrCpy $logstring "There was an error getting the repository:${NEWLINE}${NEWLINE}$ReturnError${NEWLINE}${NEWLINE}Make sure your internet (or USB repository) is connected."
@@ -705,6 +730,10 @@ ${EndIf}
     Pop $0
     StrCpy $logstring "   Return value: $0"
     Call logMessage
+    ${If} $0 != 0
+      StrCpy $logstring "Virtual environment creation failed (return value $0)."
+      Call logWarning
+    ${EndIf}
   ${EndIf}
   ; Git installed in this run isn't on this installer's PATH yet, so add its folder for
   ; A-Z+T's bootstrap (which clones its sister repositories) and for the launch at the
@@ -718,8 +747,19 @@ ${EndIf}
   ${If} ${FileExists} "$venvPython"
     StrCpy $logstring "Installing A-Z+T modules from $INSTDIR\requirements.txt ..."
     Call logMessage
-    nsExec::ExecToLog `cmd /S /C "$pathPrefix"$venvPython" -c "import utilities.py_modules""`
-    Pop $0
+    InitPluginsDir
+    File /oname=$PLUGINSDIR\bootstrap_runner.py "bootstrap_runner.py"
+    StrCpy $bootstrapLog "$EXEDIR\${INSTALLERNAME}_bootstrap.log"
+    StrCpy $logstring "Bootstrap transcript: $bootstrapLog (appended on each run). Downloads may take several minutes."
+    Call logMessage
+    nsExec::ExecToLog `cmd /S /C "$pathPrefix"$venvPython" -u -X utf8 "$PLUGINSDIR\bootstrap_runner.py" "$bootstrapLog" "$venvPython" -u -X utf8 -X faulthandler -c "import utilities.py_modules""`
+    Pop $bootstrapResult
+    StrCpy $logstring "Bootstrap command returned: $bootstrapResult. Transcript: $bootstrapLog"
+    Call logMessage
+    ${If} $bootstrapResult != 0
+      StrCpy $logstring "A-Z+T bootstrap failed (return value $bootstrapResult); see $bootstrapLog."
+      Call logWarning
+    ${EndIf}
     ; The stamp must match the sha256 of requirements.txt (lowercase hex)
     StrCpy $2 ""
     ClearErrors
@@ -737,6 +777,7 @@ ${EndIf}
     StrCpy $logstring "Requirements stamp: <$2>; requirements.txt sha256: <$3>"
     Call logMessage
     ${If} $0 == 0
+    ${AndIf} $bootstrapResult == 0
     ${AndIf} $2 != ""
     ${AndIf} $2 S== $3
       StrCpy $logstring "A-Z+T modules installed."
@@ -1672,6 +1713,7 @@ FunctionEnd
 ;             The switches back to the installation drive and directory
 ;
 Function gitPullAZT
+  Var /GLOBAL gitPullResult
   StrCpy $logstring "---- gitPullAZT ---- "
   Call logMessage
 
@@ -1715,7 +1757,8 @@ noDriveChange:
     
   StrCpy $tempLogFile "git_error.log"
   ClearErrors
-  ExecWait 'cmd /C $\"$\"$gitExe$\" pull --depth 1 origin$\" 2>$tempLogFile' $0
+  ExecWait 'cmd /C $\"$\"$gitExe$\" pull origin$\" 2>$tempLogFile' $0
+  StrCpy $gitPullResult $0
   StrCpy $logstring "   Return value: $0"
   Call logMessage
   ${If} $0 != 0
@@ -1744,6 +1787,7 @@ noDriveChange2:
 
   StrCpy $logstring "Switched to $OUTDIR"
   Call logMessage
+  Push $gitPullResult
   Return
 FunctionEnd
 
@@ -2556,7 +2600,6 @@ Function .onInstSuccess
       StrCpy $logstring "Machine-wide steps completed."
       Call logMessage
       Call writeAdminWarnings
-      FileClose $log0
       Return
     ${EndIf}
     ; (The summary and the launch are on the finish page: see finishPre and launchAZT)
@@ -2578,7 +2621,17 @@ Function .onInstSuccess
     Delete "$EXEDIR\${INSTALLERNAME}_admin_warnings.txt"
     
     ClearErrors
-    FileClose $log0   ; close the installation log file
+    StrCpy $logstring "Installation sections completed; opening the Finish page."
+    Call logMessage
+FunctionEnd
+
+; Keep logging available to finishPre and launchAZT until the window closes.
+Function .onGUIEnd
+  ${If} $log0 != ""
+    StrCpy $logstring "Installer window closing."
+    Call logMessage
+    FileClose $log0
+  ${EndIf}
 FunctionEnd
 
 ;-----------------------------------------------------------------
@@ -2606,11 +2659,20 @@ FunctionEnd
 Function launchAZT
   StrCpy $logstring  "Launching: $pathPrefix$pythonExe $aztfilename"
   Call logMessage
+  ClearErrors
   ${If} $pathPrefix == ""
     ExecShell "open" "$pythonExe" "$\"$aztfilename$\"" SW_SHOW
   ${Else}
     ; With Git's folder on PATH (see the AZT section)
     Exec `cmd /S /C "$pathPrefix"$pythonExe" "$aztfilename""`
+  ${EndIf}
+  ${If} ${Errors}
+    StrCpy $logstring "Unable to start A-Z+T. Try the desktop shortcut; details are in $EXEDIR\$logfile."
+    Call logMessage
+    MessageBox MB_OK|MB_ICONEXCLAMATION $logstring
+  ${Else}
+    StrCpy $logstring "A-Z+T launch requested (application startup is not verified)."
+    Call logMessage
   ${EndIf}
 FunctionEnd
 
@@ -2624,7 +2686,6 @@ Function .onInstFailed
     StrCpy $warnings "- Machine-wide steps were aborted (see ${INSTALLERNAME}_admin.log).${NEWLINE}$warnings"
     Call writeAdminWarnings
   ${EndIf}
-  FileClose $log0   ; close the installation log file
   MessageBox MB_YESNO "${APPNAME} installation aborted.  View log file?" IDNO NoReadme
       Exec "notepad.exe $logfile"
   NoReadme:
